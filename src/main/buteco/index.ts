@@ -5,21 +5,27 @@
  */
 
 import { desktopCapturer, webContents } from "electron";
-import type { ButecoPublishMeta, ButecoSource } from "shared/buteco";
+import type { ButecoEvent, ButecoPublishMeta, ButecoSource } from "shared/buteco";
 import { IpcEvents } from "shared/IpcEvents";
 
 import { handle } from "../utils/ipcWrappers";
 import { armCapture, cancelCapture } from "./capture";
 import { exchangeCode, tokenVault } from "./pairing";
 import { connectHelper, type HelperConnection } from "./socket";
-import { butecoStore } from "./store";
+import { butecoStore, toWireState } from "./store";
 import { publishScreen, refreshIce, unpair, unpublishScreen } from "./whip";
 
 let helper: HelperConnection | null = null;
 
-function broadcast() {
+/**
+ * Pushes the current store snapshot to every webContents, redacting the bearer
+ * token via `toWireState`. When an event has just been forwarded it rides along
+ * in the envelope so the renderer can react to revoked/stop_requested/screen_lost.
+ */
+function broadcast(event?: ButecoEvent) {
+    const envelope = { state: toWireState(butecoStore.getState()), event };
     for (const wc of webContents.getAllWebContents()) {
-        wc.send(IpcEvents.BUTECO_EVENT, butecoStore.getState());
+        wc.send(IpcEvents.BUTECO_EVENT, envelope);
     }
 }
 
@@ -37,7 +43,7 @@ function connectSocket() {
                 butecoStore.setPublishing(false);
                 butecoStore.setPhase("idle");
             }
-            broadcast();
+            broadcast(event);
         }
     });
 }

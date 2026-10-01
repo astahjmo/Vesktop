@@ -22,6 +22,27 @@ export interface ButecoStore {
     clear(): void;
 }
 
+/** Session as seen by the renderer: everything except the bearer token. */
+export type ButecoWireSession = Omit<ButecoSession, "token">;
+
+/** State snapshot safe to cross the IPC boundary (no bearer token). */
+export interface ButecoWireState extends Omit<ButecoState, "session"> {
+    session: ButecoWireSession | null;
+}
+
+/** Envelope pushed on `BUTECO_EVENT`: the snapshot plus any event just forwarded. */
+export interface ButecoEventEnvelope {
+    state: ButecoWireState;
+    event: ButecoEvent | undefined;
+}
+
+/** Strips the bearer token from a store snapshot so it never reaches the renderer. */
+export function toWireState(state: ButecoState): ButecoWireState {
+    if (!state.session) return { ...state, session: null };
+    const { token, ...session } = state.session;
+    return { ...state, session };
+}
+
 export function createButecoStore(): ButecoStore {
     let state: ButecoState = { phase: "idle", session: null, publishing: false };
     const listeners = new Set<(event: ButecoEvent) => void>();

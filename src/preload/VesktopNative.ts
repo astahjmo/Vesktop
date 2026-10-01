@@ -93,8 +93,8 @@ export const VesktopNative = {
         publish: (offerSdp: string, meta: unknown) => invoke(IpcEvents.BUTECO_PUBLISH, offerSdp, meta),
         unpublish: () => invoke(IpcEvents.BUTECO_UNPUBLISH),
         refreshIce: () => invoke(IpcEvents.BUTECO_REFRESH_ICE),
-        onEvent: (cb: (state: unknown) => void) => {
-            ipcRenderer.on(IpcEvents.BUTECO_EVENT, (_e, state) => cb(state));
+        onEvent: (cb: (envelope: unknown) => void) => {
+            ipcRenderer.on(IpcEvents.BUTECO_EVENT, (_e, envelope) => cb(envelope));
         }
     },
     /** only available on Linux. */
