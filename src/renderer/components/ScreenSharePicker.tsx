@@ -32,11 +32,14 @@ import {
     useState
 } from "@vencord/types/webpack/common";
 import { Node } from "@vencord/venmic";
+import type { ButecoEventEnvelope, ButecoWireSession } from "main/buteco/store";
 import type { Dispatch, SetStateAction } from "react";
 import { ButecoPanel } from "renderer/buteco/ButecoPanel";
+import { type ButecoController, createButecoController, type StartOptions } from "renderer/buteco/controller";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
+import type { ButecoResult, ButecoSession } from "shared/buteco";
 
 import { SimpleErrorBoundary } from "./SimpleErrorBoundary";
 
@@ -131,6 +134,96 @@ addPatch({
     }
 });
 
+const VIRT_MIC_LABEL = "vencord-screen-share";
+
+/**
+ * The controller currently publishing to the Buteco Ground, if any. Kept at
+ * module scope so a later task (native-UI stop) can end the stream.
+ */
+export let activeButecoController: ButecoController | null = null;
+
+/** Latest token-redacted session seen on the wire, used to seed `getSession()`. */
+let latestButecoSession: ButecoWireSession | null = null;
+
+export function getLatestButecoSession(): ButecoWireSession | null {
+    return latestButecoSession;
+}
+
+/** Idempotently stops the active Buteco stream, if one is publishing. */
+export async function stopActiveButeco(): Promise<void> {
+    const controller = activeButecoController;
+    activeButecoController = null;
+    if (controller) await controller.stop().catch(() => {});
+}
+
+async function findVirtmicDeviceId(): Promise<string | null> {
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        return devices.find(d => d.label === VIRT_MIC_LABEL)?.deviceId ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Arms the capture in main, then builds and starts a Buteco controller with the
+ * real media/PC/virtmic/publish dependencies. Must run after the picker's
+ * `submit` has resolved, so the main display-media handler is no longer pending
+ * (see the armed-capture flow in `src/main/screenShare.ts`).
+ */
+export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult<void>> {
+    try {
+        await stopActiveButeco();
+        await VesktopNative.buteco.armCapture(pick.sourceId);
+
+        const controller = createButecoController({
+            // The main process stores the full session; the renderer only ever
+            // sees the token-redacted wire copy, and the controller reads only
+            // iceServers and limits from it.
+            getSession: () => (latestButecoSession as ButecoSession | null) ?? null,
+            getDisplayMedia: opts => navigator.mediaDevices.getDisplayMedia(opts),
+            getUserMedia: opts => navigator.mediaDevices.getUserMedia(opts),
+            createPeerConnection: iceServers => new RTCPeerConnection({ iceServers, bundlePolicy: "max-bundle" }),
+            publish: (sdp, meta) => VesktopNative.buteco.publish(sdp, meta),
+            unpublish: () => VesktopNative.buteco.unpublish(),
+            getVirtmicDeviceId: findVirtmicDeviceId,
+            virtmic: {
+                start: nodes => VesktopNative.virtmic.start(nodes as Node[]),
+                stop: () => VesktopNative.virtmic.stop()
+            }
+        });
+
+        activeButecoController = controller;
+
+        const res = await controller.start({
+            sourceId: pick.sourceId,
+            videoKind: pick.videoKind,
+            videoLabel: pick.videoLabel,
+            height: pick.height,
+            fps: pick.fps,
+            mic: pick.mic,
+            // App-audio node selection is wired by a later task; `includeSources`
+            // carries it once the audio block lands.
+            includeAudioNodes: Array.isArray(pick.includeSources) ? pick.includeSources : []
+        } satisfies StartOptions);
+
+        if (!res.ok) {
+            await stopActiveButeco();
+            // A start can abort before the module's getDisplayMedia consumes the
+            // arm (e.g. no session); release it so it cannot leak into a later,
+            // unrelated capture. Consumed arms are a harmless no-op.
+            await VesktopNative.buteco.cancelCapture();
+            return res;
+        }
+
+        return { ok: true, value: undefined };
+    } catch {
+        await stopActiveButeco();
+        await VesktopNative.buteco.cancelCapture();
+        return { ok: false, error: { code: "network", message: "Falha ao iniciar a captura." } };
+    }
+}
+
 if (isLinux) {
     onceReady.then(() => {
         const ownsStream = (streamKey: string) => {
@@ -155,6 +248,21 @@ if (isLinux) {
     });
 }
 
+// One long-lived subscription: mirror the token-redacted session carried on
+// every Buteco envelope (so the controller's `getSession()` has the ice servers
+// / limits at start) and tear the active controller down on terminal events.
+onceReady.then(() => {
+    VesktopNative.buteco.onEvent(envelope => {
+        const { state, event } = envelope as ButecoEventEnvelope;
+        latestButecoSession = state.session;
+
+        const type = event?.type;
+        if (type === "revoked" || type === "stop_requested" || type === "screen_lost") {
+            void stopActiveButeco();
+        }
+    });
+});
+
 export function openScreenSharePicker(screens: Source[], skipPicker: boolean) {
     let didSubmit = false;
     return new Promise<StreamPick>((resolve, reject) => {
@@ -166,8 +274,19 @@ export function openScreenSharePicker(screens: Source[], skipPicker: boolean) {
                     submit={async v => {
                         didSubmit = true;
 
-                        // The Buteco path manages its own audio; never start the virtmic for it.
-                        if (v.mode !== "buteco" && v.includeSources && v.includeSources !== "None") {
+                        if (v.mode === "buteco") {
+                            // Resolve first: main's pending display-media handler then
+                            // sees `mode: "buteco"` and cancels Go Live before the
+                            // module's own (armed) capture starts below. Starting the
+                            // capture only after that first handler has returned avoids
+                            // any chance of the two display-media requests overlapping.
+                            // The panel spreads a full ButecoPick into this StreamPick.
+                            resolve(v);
+                            await startButecoPublish(v as unknown as ButecoPick);
+                            return;
+                        }
+
+                        if (v.includeSources && v.includeSources !== "None") {
                             if (v.includeSources === "Entire System") {
                                 await VesktopNative.virtmic.startSystem(
                                     !v.excludeSources || isSpecialSource(v.excludeSources) ? [] : v.excludeSources
@@ -727,10 +846,24 @@ function ModalComponent({
         includeSources: "None"
     });
     const [butecoPick, setButecoPick] = useState<ButecoPick | null>(null);
+    const [paired, setPaired] = useState(() => getLatestButecoSession() !== null);
     const qualitySettings = (useVesktopState().screenshareQuality ??= {
         resolution: "720",
         frameRate: "30"
     });
+
+    async function handlePair(code: string): Promise<boolean> {
+        try {
+            const res = (await VesktopNative.buteco.pair(code)) as ButecoResult<ButecoWireSession>;
+            if (!res.ok) return false;
+
+            latestButecoSession = res.value;
+            setPaired(true);
+            return true;
+        } catch {
+            return false;
+        }
+    }
 
     function handleGoLive() {
         currentSettings = settings;
@@ -829,12 +962,16 @@ function ModalComponent({
                 <ButecoPanel
                     pick={butecoPick}
                     onPick={setButecoPick}
+                    paired={paired}
+                    onPair={handlePair}
                     onStart={() => {
+                        if (!butecoPick) return;
                         submit({
                             id: "",
                             mode: "buteco",
                             contentHint: settings.contentHint,
-                            audio: settings.audio
+                            audio: settings.audio,
+                            ...butecoPick
                         } as StreamPick);
                         close();
                     }}

@@ -6,7 +6,9 @@
 
 import type { Node } from "@vencord/venmic";
 import { ipcRenderer } from "electron/renderer";
+import type { ButecoWireSession } from "main/buteco/store";
 import type { IpcMessage, IpcResponse } from "main/ipcCommands";
+import type { ButecoResult } from "shared/buteco";
 import type { Settings } from "shared/settings";
 
 import { IpcEvents } from "../shared/IpcEvents";
@@ -85,10 +87,14 @@ export const VesktopNative = {
         getLargeThumbnail: (id: string) => invoke<string>(IpcEvents.CAPTURER_GET_LARGE_THUMBNAIL, id)
     },
     buteco: {
-        pair: (code: string) => invoke(IpcEvents.BUTECO_PAIR, code),
+        // Only the narrow methods this task wires are typed; the rest of the
+        // namespace (listSources, refreshIce, ...) keeps its loose typing for the
+        // later typing pass. `onEvent`'s envelope (`{ state, event? }`) is owned
+        // by that same task.
+        pair: (code: string) => invoke<ButecoResult<ButecoWireSession>>(IpcEvents.BUTECO_PAIR, code),
         unpair: () => invoke(IpcEvents.BUTECO_UNPAIR),
-        armCapture: (sourceId: string) => invoke(IpcEvents.BUTECO_ARM_CAPTURE, sourceId),
-        cancelCapture: () => invoke(IpcEvents.BUTECO_CANCEL_CAPTURE),
+        armCapture: (sourceId: string) => invoke<void>(IpcEvents.BUTECO_ARM_CAPTURE, sourceId),
+        cancelCapture: () => invoke<void>(IpcEvents.BUTECO_CANCEL_CAPTURE),
         listSources: () => invoke(IpcEvents.BUTECO_LIST_SOURCES),
         publish: (offerSdp: string, meta: unknown) => invoke(IpcEvents.BUTECO_PUBLISH, offerSdp, meta),
         unpublish: () => invoke(IpcEvents.BUTECO_UNPUBLISH),
