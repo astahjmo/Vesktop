@@ -6,7 +6,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { publishScreen } from "./whip";
+import { publishScreen, refreshIce, unpair, unpublishScreen } from "./whip";
 
 const meta = {
     videoKind: "screen",
@@ -56,5 +56,44 @@ describe("publishScreen", () => {
         const res = await publishScreen({ token: "t", offerSdp: "v=0 offer", meta, fetchImpl });
         expect(res.ok).toBe(false);
         if (!res.ok) expect(res.error.code).toBe("sfu_unavailable");
+    });
+});
+
+describe("refreshIce", () => {
+    it("unwraps iceServers on success", async () => {
+        const iceServers = [{ urls: "stun:stun.example.org" }];
+        const fetchImpl = fetchReturns({ status: 200, body: { iceServers } });
+        const res = await refreshIce({ token: "t", fetchImpl });
+        expect(res).toEqual({ ok: true, value: iceServers });
+    });
+
+    it("maps a malformed 200 response to network", async () => {
+        const fetchImpl = fetchReturns({ status: 200, body: { nope: 1 } });
+        const res = await refreshIce({ token: "t", fetchImpl });
+        expect(res.ok).toBe(false);
+        if (!res.ok) expect(res.error.code).toBe("network");
+    });
+
+    it("preserves a 401 token_invalid refusal", async () => {
+        const fetchImpl = fetchReturns({ status: 401, body: {} });
+        const res = await refreshIce({ token: "t", fetchImpl });
+        expect(res.ok).toBe(false);
+        if (!res.ok) expect(res.error.code).toBe("token_invalid");
+    });
+});
+
+describe("unpublishScreen", () => {
+    it("accepts a 204", async () => {
+        const fetchImpl = fetchReturns({ status: 204, body: undefined });
+        const res = await unpublishScreen({ token: "t", fetchImpl });
+        expect(res).toEqual({ ok: true, value: undefined });
+    });
+});
+
+describe("unpair", () => {
+    it("accepts a 204", async () => {
+        const fetchImpl = fetchReturns({ status: 204, body: undefined });
+        const res = await unpair({ token: "t", fetchImpl });
+        expect(res).toEqual({ ok: true, value: undefined });
     });
 });

@@ -60,16 +60,17 @@ export function unpublishScreen(deps: WhipDeps): Promise<ButecoResult<void>> {
     return groundRequest<void>(`${BASE}/screen`, { method: "DELETE", token: deps.token, fetchImpl: deps.fetchImpl });
 }
 
-export function refreshIce(deps: WhipDeps): Promise<ButecoResult<ButecoIceServer[]>> {
-    return groundRequest<{ iceServers: ButecoIceServer[] }>(`${BASE}/ice`, {
+export async function refreshIce(deps: WhipDeps): Promise<ButecoResult<ButecoIceServer[]>> {
+    const r = await groundRequest<{ iceServers: ButecoIceServer[] }>(`${BASE}/ice`, {
         method: "GET",
         token: deps.token,
         fetchImpl: deps.fetchImpl
-    }).then(r =>
-        r.ok && Array.isArray(r.value?.iceServers)
-            ? ({ ok: true, value: r.value.iceServers } as const)
-            : ({ ok: false, error: { code: "network", message: "Resposta inválida do servidor." } } as const)
-    );
+    });
+    if (!r.ok) return r;
+    if (!Array.isArray(r.value?.iceServers)) {
+        return { ok: false, error: { code: "network", message: "Resposta inválida do servidor." } };
+    }
+    return { ok: true, value: r.value.iceServers };
 }
 
 export function unpair(deps: WhipDeps): Promise<ButecoResult<void>> {
