@@ -113,4 +113,48 @@ describe("createButecoStopper", () => {
         expect(broadcast).toHaveBeenCalledTimes(1);
         expect(store.getState().phase).toBe("idle");
     });
+
+    it("releases the re-entry guard when broadcast throws", async () => {
+        const unpublish = vi.fn(async () => ({ ok: true as const, value: undefined }));
+        const broadcast = vi.fn(() => {
+            throw new Error("webContents.send failed");
+        });
+        const { deps, store } = makeDeps({ unpublish, broadcast });
+        const stopper = createButecoStopper(deps);
+
+        store.setPublishing(true);
+        await expect(stopper.stop()).resolves.toBeUndefined();
+        expect(unpublish).toHaveBeenCalledTimes(1);
+
+        // The guard must have been released: a later publish can be stopped again.
+        store.setPublishing(true);
+        await stopper.stop();
+
+        expect(unpublish).toHaveBeenCalledTimes(2);
+        expect(store.getState().publishing).toBe(false);
+        expect(store.getState().phase).toBe("idle");
+    });
+
+    it("clears publishing and releases the guard when a store subscriber throws", async () => {
+        const store = createButecoStore();
+        const unpublish = vi.fn(async () => ({ ok: true as const, value: undefined }));
+        const { deps } = makeDeps({ store, unpublish });
+        const stopper = createButecoStopper(deps);
+
+        // Simulate a tray rebuild (subscriber) throwing on the synchronous flip.
+        store.subscribe(state => {
+            if (state.phase === "stopping") throw new Error("tray rebuild failed");
+        });
+
+        store.setPublishing(true);
+        await expect(stopper.stop()).resolves.toBeUndefined();
+
+        expect(store.getState().publishing).toBe(false);
+        expect(unpublish).toHaveBeenCalledTimes(1);
+
+        // State was applied before the throwing subscriber, so a later stop works.
+        store.setPublishing(true);
+        await stopper.stop();
+        expect(unpublish).toHaveBeenCalledTimes(2);
+    });
 });

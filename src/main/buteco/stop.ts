@@ -35,6 +35,10 @@ export interface ButecoStopper {
  * a slow or hung `DELETE` is still in flight) is ignored instead of firing a
  * duplicate request. The Ground unpublish still runs with the main-held token, so
  * the stream ends even when the renderer is unresponsive.
+ *
+ * Every side effect is best-effort: a throwing store subscriber (e.g. a tray
+ * rebuild) or a dead `webContents` must not skip the unpublish nor leave the
+ * re-entry guard stuck for the process lifetime.
  */
 export function createButecoStopper(deps: ButecoStopDeps): ButecoStopper {
     let stoppingInFlight = false;
@@ -46,18 +50,34 @@ export function createButecoStopper(deps: ButecoStopDeps): ButecoStopper {
 
             stoppingInFlight = true;
 
-            // Flip the flag synchronously, before awaiting anything: the tray item
-            // hides immediately and a concurrent click sees `publishing === false`.
-            deps.store.setPublishing(false);
-            deps.store.setPhase("stopping");
-            deps.broadcast("stop");
+            // Flip the flag synchronously, before awaiting anything: the tray
+            // item hides immediately and a concurrent click sees
+            // `publishing === false`. The store applies the new state before
+            // notifying subscribers, so it holds even if a subscriber throws.
+            try {
+                deps.store.setPublishing(false);
+            } catch {
+                // State was applied before the subscriber ran; keep going.
+            }
+
+            try {
+                deps.store.setPhase("stopping");
+                deps.broadcast("stop");
+            } catch {
+                // Notification is best-effort; the stop still proceeds.
+            }
 
             try {
                 const token = deps.getToken();
                 if (token) await deps.unpublish(token).catch(() => {});
             } finally {
-                deps.store.setPhase("idle");
+                // Always release the guard, on every exit path.
                 stoppingInFlight = false;
+                try {
+                    deps.store.setPhase("idle");
+                } catch {
+                    // Idle transition is best-effort once the stop has happened.
+                }
             }
         }
     };
