@@ -7,7 +7,7 @@
 import type { ButecoSession } from "shared/buteco";
 import { describe, expect, it, vi } from "vitest";
 
-import { createButecoStore, toWireEvent, toWireState } from "./store";
+import { createButecoStore, redactSession, toWireEvent, toWireState } from "./store";
 
 const session: ButecoSession = {
     token: "super-secret-token",
@@ -44,6 +44,20 @@ describe("butecoStore", () => {
         off();
         store.emitEvent({ type: "revoked", reason: "user_revoked" });
         expect(cb).not.toHaveBeenCalled();
+    });
+});
+
+describe("redactSession", () => {
+    it("strips the bearer token but keeps everything else", () => {
+        const wire = redactSession(session);
+        expect(wire).not.toHaveProperty("token");
+        expect(wire.tokenExpiresAt).toBe("2026-10-01T12:00:00.000Z");
+        expect(wire.room.slug).toBe("sala");
+        expect(wire.user.displayName).toBe("Dev");
+        expect(wire.socket.url).toBe("https://games.example.com");
+        expect(wire.iceServers).toHaveLength(1);
+        expect(wire.screen.takenBy).toBeNull();
+        expect(wire.serverNow).toBe("2026-10-01T11:00:00.000Z");
     });
 });
 

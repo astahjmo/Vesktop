@@ -5,14 +5,14 @@
  */
 
 import { desktopCapturer, webContents } from "electron";
-import type { ButecoEvent, ButecoPublishMeta, ButecoSource } from "shared/buteco";
+import type { ButecoEvent, ButecoPublishMeta, ButecoResult, ButecoSource } from "shared/buteco";
 import { IpcEvents } from "shared/IpcEvents";
 
 import { handle } from "../utils/ipcWrappers";
 import { armCapture, cancelCapture } from "./capture";
 import { exchangeCode, tokenVault } from "./pairing";
 import { connectHelper, type HelperConnection } from "./socket";
-import { butecoStore, toWireEvent, toWireState } from "./store";
+import { butecoStore, type ButecoWireSession, redactSession, toWireEvent, toWireState } from "./store";
 import { publishScreen, refreshIce, unpair, unpublishScreen } from "./whip";
 
 let helper: HelperConnection | null = null;
@@ -54,7 +54,7 @@ function connectSocket() {
 }
 
 export function registerButeco() {
-    handle(IpcEvents.BUTECO_PAIR, async (_, code: string) => {
+    handle(IpcEvents.BUTECO_PAIR, async (_, code: string): Promise<ButecoResult<ButecoWireSession>> => {
         butecoStore.setPhase("pairing");
         const res = await exchangeCode(code);
         if (res.ok) {
@@ -62,9 +62,10 @@ export function registerButeco() {
             butecoStore.setSession(res.value);
             butecoStore.setPhase("ready");
             connectSocket();
-        } else {
-            butecoStore.setPhase("idle");
+            broadcast();
+            return { ok: true, value: redactSession(res.value) };
         }
+        butecoStore.setPhase("idle");
         broadcast();
         return res;
     });
