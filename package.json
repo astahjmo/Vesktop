@@ -20,13 +20,15 @@
         "start:dev": "pnpm build:dev && electron .",
         "start:watch": "pnpm build:dev && tsx scripts/startWatch.mts",
         "test": "pnpm lint && pnpm testTypes",
+        "test:unit": "vitest run",
         "testTypes": "tsc --noEmit",
         "watch": "pnpm build --watch",
         "generateMeta": "tsx scripts/utils/generateMeta.mts"
     },
     "dependencies": {
         "arrpc": "github:Vencord/arrpc#1dc801e8ea14d96ce8dccff416417614f058afb8",
-        "electron-updater": "6.6.2"
+        "electron-updater": "6.6.2",
+        "socket.io-client": "^4.8.4"
     },
     "optionalDependencies": {
         "@vencord/venmic": "^7.2.3"
@@ -56,6 +58,7 @@
         "type-fest": "^5.10.0",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.70.0",
+        "vitest": "^2.1.9",
         "xml-formatter": "^3.6.7"
     },
     "packageManager": "pnpm@11.9.0",
