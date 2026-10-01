@@ -9,6 +9,7 @@ import { release } from "os";
 import type { StreamPick } from "renderer/components/ScreenSharePicker";
 import { IpcCommands, IpcEvents } from "shared/IpcEvents";
 
+import { consumeCapture } from "./buteco/capture";
 import { sendRendererCommand } from "./ipcCommands";
 import { handle } from "./utils/ipcWrappers";
 
@@ -30,6 +31,15 @@ export function registerScreenShareHandler() {
     });
 
     session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+        // Buteco: the module's own getDisplayMedia call consumes the armed source; never reopen the picker.
+        const armedId = consumeCapture();
+        if (armedId) {
+            const sources = await desktopCapturer.getSources({ types: ["window", "screen"] }).catch(() => []);
+            const source = sources.find(s => s.id === armedId);
+            callback(source ? { video: source } : {});
+            return;
+        }
+
         // request full resolution on wayland right away because we always only end up with one result anyway
         const width = isWayland ? 1920 : 176;
         const sources = await desktopCapturer
@@ -74,6 +84,12 @@ export function registerScreenShareHandler() {
         });
 
         if (!choice) return callback({});
+
+        if (choice.mode === "buteco") {
+            // Handled by the Buteco module; do not send media to Discord's SFU.
+            callback({});
+            return;
+        }
 
         const source = sources.find(s => s.id === choice.id);
         if (!source) return callback({});

@@ -66,6 +66,7 @@ interface StreamSettings {
 
 export interface StreamPick extends StreamSettings {
     id: string;
+    mode?: "native" | "buteco";
 }
 
 interface Source {
