@@ -44,7 +44,11 @@ export async function getWebStatusFrom(
             signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
         });
         if (!res.ok) return { loggedIn: false, user: null };
-        return { loggedIn: true, user: parseSessionUser(await res.json().catch(() => null)) };
+
+        const body = await res.json().catch(() => null);
+        // Better Auth responde 200 com corpo `null` para sessão revogada/expirada.
+        if (body == null) return { loggedIn: false, user: null };
+        return { loggedIn: true, user: parseSessionUser(body) };
     } catch {
         // Cookie presente mas endpoint fora do ar: segue logado sem nome.
         return { loggedIn: true, user: null };
@@ -57,8 +61,8 @@ export async function getWebStatus(): Promise<ButecoWebStatus> {
 
 /**
  * Abre a janela de login no site usando a sessão padrão (o OAuth do Discord
- * reaproveita o login do app) e resolve quando o cookie de sessão aparece ou a
- * janela fecha.
+ * reaproveita o login do app) e resolve quando a sessão valida ou a janela
+ * fecha.
  */
 export function openWebLoginWindow(): Promise<ButecoWebStatus> {
     return new Promise(resolve => {
@@ -70,14 +74,20 @@ export function openWebLoginWindow(): Promise<ButecoWebStatus> {
             webPreferences: { contextIsolation: true, nodeIntegration: false }
         });
 
-        void win.loadURL(`${BUTECO_WEB_ORIGIN}/login`);
+        void win.loadURL(`${BUTECO_WEB_ORIGIN}/login`).catch(() => {});
 
         let settled = false;
         const timer = setInterval(async () => {
             if (win.isDestroyed()) return finish();
-            if (await getWebCookieHeader()) {
-                win.close();
-                void finish();
+            try {
+                const cookie = await getWebCookieHeader();
+                // Só fecha quando o cookie realmente valida; cookie expirado segue o fluxo.
+                if (cookie && (await getWebStatusFrom(cookie)).loggedIn) {
+                    win.close();
+                    void finish();
+                }
+            } catch {
+                // Falha temporária (ex.: sessão indisponível): continua tentando.
             }
         }, LOGIN_POLL_MS);
 
@@ -85,7 +95,11 @@ export function openWebLoginWindow(): Promise<ButecoWebStatus> {
             if (settled) return;
             settled = true;
             clearInterval(timer);
-            resolve(await getWebStatus());
+            try {
+                resolve(await getWebStatus());
+            } catch {
+                resolve({ loggedIn: false, user: null });
+            }
         }
 
         win.on("closed", () => void finish());

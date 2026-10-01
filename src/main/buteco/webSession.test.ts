@@ -57,6 +57,16 @@ describe("getWebStatusFrom", () => {
         expect((init.headers as any).cookie).toBe("cookie=1");
     });
 
+    it("treats a 200 with a null body as logged out", async () => {
+        const fetchImpl = vi.fn(async () => new Response("null", { status: 200 })) as unknown as typeof fetch;
+        expect(await getWebStatusFrom("cookie=1", fetchImpl)).toEqual({ loggedIn: false, user: null });
+    });
+
+    it("treats an unparsable 200 body as logged out", async () => {
+        const fetchImpl = vi.fn(async () => new Response("<html>", { status: 200 })) as unknown as typeof fetch;
+        expect(await getWebStatusFrom("cookie=1", fetchImpl)).toEqual({ loggedIn: false, user: null });
+    });
+
     it("stays logged in without a user when the endpoint fails", async () => {
         const fetchImpl = vi.fn(async () => {
             throw new Error("down");
