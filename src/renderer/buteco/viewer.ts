@@ -17,6 +17,17 @@ let activeUserId: string | null = null;
 let failedUserId: string | null = null;
 let row: HTMLDivElement | null = null;
 let video: HTMLVideoElement | null = null;
+let focused = false;
+
+// Handle de diagnóstico (console/CDP): __butecoViewer.pc.getStats().
+(globalThis as any).__butecoViewer = {
+    get pc() {
+        return pc;
+    },
+    get video() {
+        return video;
+    }
+};
 
 function removeTile() {
     row?.remove();
@@ -30,6 +41,51 @@ function findCallGrid(): HTMLElement | null {
         document.querySelector<HTMLElement>('[class*="videoGrid"] [class*="listItems"]') ??
         document.querySelector<HTMLElement>('[class*="videoGrid"]')
     );
+}
+
+/** Mede um tile nativo do Discord para o nosso ter o mesmo tamanho. */
+function nativeTileSize(): { width?: number; height?: number } {
+    const native = document.querySelector<HTMLElement>('[class*="tileSizer"]');
+    const rect = native?.getBoundingClientRect();
+    if (rect && rect.width > 0 && rect.height > 0) {
+        return { width: Math.round(rect.width), height: Math.round(rect.height) };
+    }
+    return {};
+}
+
+function applyFocus() {
+    if (!row || !video) return;
+    const tile = video.parentElement as HTMLDivElement | null;
+    if (!tile) return;
+
+    if (focused) {
+        // Cobre a área da call (não mexe na grade do Discord).
+        const area =
+            document.querySelector<HTMLElement>('[class*="videoControls"]') ??
+            document.querySelector<HTMLElement>('[class*="callContainer"]');
+        const rect = area?.getBoundingClientRect();
+        const left = rect ? rect.left : 326;
+        const top = rect ? rect.top : 32;
+        const width = rect ? rect.width : window.innerWidth - 326;
+        const height = rect ? rect.height : window.innerHeight - 32;
+
+        row.style.cssText =
+            `position:fixed;left:${left}px;top:${top}px;width:${width}px;height:${height}px;z-index:120;` +
+            "display:flex;align-items:center;justify-content:center;padding:8px;box-sizing:border-box;";
+        tile.style.cssText =
+            "position:relative;width:100%;height:100%;max-width:none;aspect-ratio:auto;background:#000;" +
+            "border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.06) inset;";
+        return;
+    }
+
+    const size = nativeTileSize();
+    row.style.cssText = "width:100%;display:flex;justify-content:center;padding:2px 0;box-sizing:border-box;";
+    tile.style.cssText =
+        "position:relative;background:#000;border-radius:8px;overflow:hidden;" +
+        "box-shadow:0 0 0 1px rgba(255,255,255,.06) inset;" +
+        (size.width && size.height
+            ? `width:${size.width}px;height:${size.height}px;`
+            : "width:100%;max-width:1200px;aspect-ratio:16/9;");
 }
 
 function ensureTile(name: string): HTMLVideoElement | null {
@@ -46,12 +102,11 @@ function ensureTile(name: string): HTMLVideoElement | null {
 
     row = document.createElement("div");
     row.id = ROW_ID;
-    row.style.cssText = "width:100%;display:flex;justify-content:center;padding:2px 0;";
 
     const tile = document.createElement("div");
-    tile.style.cssText =
-        "position:relative;width:100%;max-width:1200px;aspect-ratio:16/9;background:#000;" +
-        "border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.06) inset;";
+    tile.id = "vc-buteco-stream-tile";
+    tile.title = "Clique para maximizar / restaurar";
+    tile.style.cursor = "pointer";
 
     video = document.createElement("video");
     video.autoplay = true;
@@ -65,9 +120,30 @@ function ensureTile(name: string): HTMLVideoElement | null {
         "position:absolute;left:8px;top:8px;padding:2px 8px;border-radius:999px;" +
         "background:rgba(0,0,0,.65);color:#fff;font-size:12px;font-weight:600;pointer-events:none;";
 
-    tile.append(video, badge);
+    const mute = document.createElement("button");
+    mute.id = "vc-buteco-stream-mute";
+    mute.type = "button";
+    mute.textContent = video.muted ? "🔇" : "🔊";
+    mute.title = "Alternar áudio";
+    mute.style.cssText =
+        "position:absolute;right:8px;top:8px;width:28px;height:28px;border-radius:6px;border:none;" +
+        "background:rgba(0,0,0,.65);color:#fff;cursor:pointer;font-size:14px;line-height:1;";
+    mute.addEventListener("click", event => {
+        event.stopPropagation();
+        if (!video) return;
+        video.muted = !video.muted;
+        mute.textContent = video.muted ? "🔇" : "🔊";
+    });
+
+    tile.addEventListener("click", () => {
+        focused = !focused;
+        applyFocus();
+    });
+
+    tile.append(video, badge, mute);
     row.append(tile);
     grid.prepend(row);
+    applyFocus();
 
     return video;
 }
@@ -76,6 +152,7 @@ function stopWatching() {
     pc?.close();
     pc = null;
     activeUserId = null;
+    focused = false;
     removeTile();
 }
 
@@ -94,7 +171,13 @@ async function startWatching(userId: string, name: string) {
     pc = connection;
     const stream = new MediaStream();
 
-    connection.addTransceiver("video", { direction: "recvonly" });
+    // H264/VP8 primeiro: decode mais leve que VP9/AV1 (evita frame drops).
+    const videoTransceiver = connection.addTransceiver("video", { direction: "recvonly" });
+    const codecs = RTCRtpSender.getCapabilities?.("video")?.codecs;
+    if (codecs?.length && videoTransceiver.setCodecPreferences) {
+        const preferred = codecs.filter(codec => /H264|VP8/i.test(codec.mimeType));
+        if (preferred.length) videoTransceiver.setCodecPreferences(preferred);
+    }
     connection.addTransceiver("audio", { direction: "recvonly" });
 
     connection.ontrack = event => {
@@ -106,6 +189,8 @@ async function startWatching(userId: string, name: string) {
         void el.play().catch(() => {
             // Autoplay com áudio pode ser bloqueado; cai para mudo e tenta de novo.
             el.muted = true;
+            const mute = el.parentElement?.querySelector<HTMLButtonElement>("#vc-buteco-stream-mute");
+            if (mute) mute.textContent = "🔇";
             void el.play().catch(() => {});
         });
     };
@@ -167,6 +252,16 @@ onceReady.then(() => {
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
+
+    window.addEventListener("resize", () => {
+        if (focused) applyFocus();
+    });
+
+    // A grade do Discord muda de tamanho sozinha (entra/sai gente, resize);
+    // reaplica o tamanho nativo periodicamente enquanto não estamos focados.
+    setInterval(() => {
+        if (!focused && row && document.contains(row)) applyFocus();
+    }, 1500);
 
     sync();
 });
