@@ -71,20 +71,23 @@ export interface ButecoSource {
     thumbnailDataUrl?: string;
 }
 
-export type ButecoErrorCode =
-    | "invalid_code_format"
-    | "token_invalid"
-    | "client_outdated"
-    | "network"
-    | "unsupported"
-    | "permission_denied"
-    | "video_capture_failed"
-    | "screen_audio_disabled"
-    | "screen_taken"
-    | "screen_taken_self"
-    | "sfu_unavailable"
-    | "device_error"
-    | "busy";
+const KNOWN_ERROR_CODES = [
+    "invalid_code_format",
+    "token_invalid",
+    "client_outdated",
+    "network",
+    "unsupported",
+    "permission_denied",
+    "video_capture_failed",
+    "screen_audio_disabled",
+    "screen_taken",
+    "screen_taken_self",
+    "sfu_unavailable",
+    "device_error",
+    "busy"
+] as const;
+
+export type ButecoErrorCode = (typeof KNOWN_ERROR_CODES)[number];
 
 export interface ButecoError {
     code: ButecoErrorCode;
@@ -100,22 +103,6 @@ export type ButecoEvent =
     | { type: "stop_requested"; by: "owner" | "room_owner" | "admin" }
     | { type: "screen_lost"; reason: "sfu_error" | "reset" | "taken_over" }
     | { type: "session"; session: ButecoSession };
-
-const KNOWN_ERROR_CODES: readonly ButecoErrorCode[] = [
-    "invalid_code_format",
-    "token_invalid",
-    "client_outdated",
-    "network",
-    "unsupported",
-    "permission_denied",
-    "video_capture_failed",
-    "screen_audio_disabled",
-    "screen_taken",
-    "screen_taken_self",
-    "sfu_unavailable",
-    "device_error",
-    "busy"
-];
 
 /** Maps an HTTP refusal from the Ground into a stable client error. */
 export function mapGroundRefusal(status: number, body: any, retryAfter?: string | null): ButecoError {
