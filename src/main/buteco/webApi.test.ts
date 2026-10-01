@@ -7,6 +7,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { fetchWebIce, webPublishScreen, webReleaseScreen, webRequest } from "./webApi";
+import { getWebCookieHeader } from "./webSession";
+
+vi.mock("./webSession", () => ({
+    getWebCookieHeader: vi.fn()
+}));
 
 function fakeFetch(status: number, body: unknown) {
     return vi.fn(async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
@@ -40,6 +45,14 @@ describe("webRequest", () => {
         const res = await webRequest("/api/x", { method: "GET", cookieHeader: "c=1", fetchImpl: fakeFetch(401, {}) });
         expect(res.ok).toBe(false);
         if (!res.ok) expect(res.error.code).toBe("token_invalid");
+    });
+
+    it("maps a cookie-store rejection to network instead of throwing", async () => {
+        vi.mocked(getWebCookieHeader).mockRejectedValueOnce(new Error("cookie store down"));
+        const fetchImpl = vi.fn() as unknown as typeof fetch;
+        const res = await webRequest("/api/x", { method: "GET", fetchImpl });
+        expect(res).toEqual({ ok: false, error: { code: "network", message: "Falha de rede." } });
+        expect(fetchImpl).not.toHaveBeenCalled();
     });
 });
 

@@ -13,7 +13,7 @@ import type { ButecoErrorCode } from "shared/buteco";
  */
 export const BUTECO_ERROR_MESSAGES: Record<ButecoErrorCode, string> = {
     invalid_code_format: "Código de pareamento inválido.",
-    token_invalid: "Sessão expirada. Faça o pareamento novamente.",
+    token_invalid: "Sessão expirada. Faça login novamente.",
     client_outdated: "Atualize o Buteco Games para continuar.",
     network: "Falha de rede. Tente novamente.",
     unsupported: "Recurso não suportado.",

@@ -53,6 +53,8 @@ export interface ButecoWebState {
     /** `null` = lobby nunca assinado; `[]` = assinado e vazio. */
     lobby: ButecoRoomSummary[] | null;
     room: ButecoRoomState | null;
+    /** Última recusa de join/create a exibir; `null` = sem erro pendente. */
+    joinError: string | null;
 }
 
 export type ButecoWebEvent =
@@ -66,6 +68,31 @@ export type ButecoWebEvent =
 export interface ButecoWebEnvelope {
     state: ButecoWebState;
     event?: ButecoWebEvent;
+    /**
+     * Controle opcional espelhando o envelope do helper: `"stop"` pede ao
+     * renderer para derrubar o controller local (tracks/PC/virtmic) quando a
+     * publicação web perde a sala (leave, closed/replaced, disconnect).
+     */
+    control?: "stop";
+}
+
+/** Converte o motivo de `screenshare:join_denied` numa mensagem curta em PT. */
+export function mapJoinDeniedMessage(reason: unknown): string {
+    switch (typeof reason === "string" ? reason.toLowerCase() : "") {
+        case "password":
+        case "wrong_password":
+        case "invalid_password":
+            return "Senha incorreta.";
+        case "full":
+        case "room_full":
+            return "Sala cheia.";
+        case "not_found":
+        case "closed":
+        case "unavailable":
+            return "Sala indisponível.";
+        default:
+            return "Entrada negada.";
+    }
 }
 
 export function mapLobbyRooms(raw: unknown): ButecoRoomSummary[] {

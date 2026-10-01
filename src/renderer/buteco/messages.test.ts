@@ -16,8 +16,8 @@ describe("BUTECO_ERROR_MESSAGES", () => {
         }
     });
 
-    it("covers the repair codes with re-pairing guidance", () => {
-        expect(BUTECO_ERROR_MESSAGES.token_invalid).toContain("pareamento");
+    it("covers the repair codes with re-login/update guidance", () => {
+        expect(BUTECO_ERROR_MESSAGES.token_invalid).toContain("login");
         expect(BUTECO_ERROR_MESSAGES.client_outdated).toContain("Atualize");
     });
 });

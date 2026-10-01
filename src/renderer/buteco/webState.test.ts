@@ -18,12 +18,25 @@ describe("butecoWebState", () => {
             state: {
                 status: { loggedIn: true, user: { id: "u1", displayName: "Ana" } },
                 lobby: [],
-                room: null
+                room: null,
+                joinError: null
             },
             event: { type: "status", status: { loggedIn: true, user: { id: "u1", displayName: "Ana" } } }
         });
         expect(getButecoWebState().status.loggedIn).toBe(true);
         expect(cb).toHaveBeenCalledTimes(1);
+    });
+
+    it("carries a join error in the envelope state", () => {
+        applyButecoWebEnvelope({
+            state: {
+                status: { loggedIn: true, user: null },
+                lobby: [],
+                room: null,
+                joinError: "Senha incorreta."
+            }
+        });
+        expect(getButecoWebState().joinError).toBe("Senha incorreta.");
     });
 
     it("ignores malformed envelopes", () => {

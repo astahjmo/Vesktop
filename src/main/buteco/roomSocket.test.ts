@@ -70,4 +70,18 @@ describe("createRoomSocket", () => {
         ctrl.close();
         expect(socket.disconnect).toHaveBeenCalled();
     });
+
+    it("emits room-closed/disconnected on transport drop but not on close()", () => {
+        const { io, socket } = fakeIo();
+        const events: any[] = [];
+        const ctrl = createRoomSocket({ cookieHeader: null, ioImpl: io, onEvent: e => events.push(e) });
+
+        socket.fire("disconnect");
+        expect(events).toEqual([{ type: "room-closed", reason: "disconnected" }]);
+
+        events.length = 0;
+        ctrl.close();
+        socket.fire("disconnect");
+        expect(events).toEqual([]);
+    });
 });

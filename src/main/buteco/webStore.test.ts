@@ -14,7 +14,8 @@ describe("butecoWebStore", () => {
         expect(store.getState()).toEqual({
             status: { loggedIn: false, user: null },
             lobby: null,
-            room: null
+            room: null,
+            joinError: null
         });
     });
 
@@ -26,5 +27,13 @@ describe("butecoWebStore", () => {
         store.emitEvent({ type: "lobby", rooms: [] });
         expect(store.getState().lobby).toHaveLength(1);
         expect(cb).toHaveBeenCalledWith({ type: "lobby", rooms: [] });
+    });
+
+    it("stores and clears the join error", () => {
+        const store = createButecoWebStore();
+        store.patch({ joinError: "Senha incorreta." });
+        expect(store.getState().joinError).toBe("Senha incorreta.");
+        store.patch({ joinError: null });
+        expect(store.getState().joinError).toBeNull();
     });
 });

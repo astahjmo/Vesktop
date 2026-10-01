@@ -36,8 +36,17 @@ export function createRoomSocket(opts: CreateRoomSocketOptions): RoomSocket {
         ...(opts.cookieHeader ? { extraHeaders: { Cookie: opts.cookieHeader } } : {})
     });
 
+    // Diferencia a queda de transporte de um `close()` nosso: só a primeira
+    // limpa a sala (e derruba a publicação ativa) no main.
+    let closedByUs = false;
+
     socket.on("connect", () => {
         socket.emit("screenshare:subscribe");
+    });
+
+    socket.on("disconnect", () => {
+        if (closedByUs) return;
+        opts.onEvent({ type: "room-closed", reason: "disconnected" });
     });
 
     socket.on("screenshare:lobby", (payload: unknown) => {
@@ -69,6 +78,7 @@ export function createRoomSocket(opts: CreateRoomSocketOptions): RoomSocket {
         create: (name, password) => socket.emit("screenshare:create", { name, password: password ?? "" }),
         leave: () => socket.emit("screenshare:leave"),
         close: () => {
+            closedByUs = true;
             socket.removeAllListeners?.();
             socket.disconnect();
         }

@@ -14,7 +14,7 @@ export interface ButecoWebStore {
 }
 
 export function createButecoWebStore(): ButecoWebStore {
-    let state: ButecoWebState = { status: { loggedIn: false, user: null }, lobby: null, room: null };
+    let state: ButecoWebState = { status: { loggedIn: false, user: null }, lobby: null, room: null, joinError: null };
     const listeners = new Set<(event: ButecoWebEvent) => void>();
 
     return {

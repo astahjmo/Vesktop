@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { mapLobbyRooms, mapRoomState } from "./butecoWeb";
+import { mapJoinDeniedMessage, mapLobbyRooms, mapRoomState } from "./butecoWeb";
 
 describe("mapLobbyRooms", () => {
     it("maps a room array and tolerates missing fields", () => {
@@ -53,5 +53,20 @@ describe("mapRoomState", () => {
         expect(mapRoomState(null)).toBeNull();
         const room = mapRoomState({ roomId: "r1", members: [{ foo: 1 }] });
         expect(room!.members).toEqual([]);
+    });
+});
+
+describe("mapJoinDeniedMessage", () => {
+    it("maps the known reasons to short PT messages", () => {
+        expect(mapJoinDeniedMessage("password")).toBe("Senha incorreta.");
+        expect(mapJoinDeniedMessage("WRONG_PASSWORD")).toBe("Senha incorreta.");
+        expect(mapJoinDeniedMessage("full")).toBe("Sala cheia.");
+        expect(mapJoinDeniedMessage("not_found")).toBe("Sala indisponível.");
+    });
+
+    it("falls back to a generic denial for unknown/absent reasons", () => {
+        expect(mapJoinDeniedMessage(undefined)).toBe("Entrada negada.");
+        expect(mapJoinDeniedMessage(42)).toBe("Entrada negada.");
+        expect(mapJoinDeniedMessage("whatever")).toBe("Entrada negada.");
     });
 });

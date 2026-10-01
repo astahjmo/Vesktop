@@ -22,7 +22,15 @@ export interface WebRequestOptions {
 /** Request autenticada por cookie contra o site. Nunca loga headers. */
 export async function webRequest<T = any>(path: string, opts: WebRequestOptions): Promise<ButecoResult<T>> {
     const doFetch = opts.fetchImpl ?? fetch;
-    const cookie = opts.cookieHeader !== undefined ? opts.cookieHeader : await getWebCookieHeader();
+
+    let cookie: string | null;
+    try {
+        cookie = opts.cookieHeader !== undefined ? opts.cookieHeader : await getWebCookieHeader();
+    } catch {
+        // Ler o cofre de cookies pode rejeitar (ex.: sessão indisponível); a
+        // chamada nunca deve explodir para o handler IPC.
+        return { ok: false, error: { code: "network", message: "Falha de rede." } };
+    }
     if (!cookie) return { ok: false, error: { code: "token_invalid", message: "Entre no Buteco Games primeiro." } };
 
     const headers: Record<string, string> = { accept: "application/json", cookie };

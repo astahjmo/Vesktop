@@ -7,7 +7,7 @@
 import type { ButecoWebEnvelope, ButecoWebState } from "shared/butecoWeb";
 
 function initialState(): ButecoWebState {
-    return { status: { loggedIn: false, user: null }, lobby: null, room: null };
+    return { status: { loggedIn: false, user: null }, lobby: null, room: null, joinError: null };
 }
 
 let state: ButecoWebState = initialState();

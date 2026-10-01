@@ -42,6 +42,7 @@ import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
 import type { ButecoError, ButecoIceServer, ButecoResult, ButecoSession } from "shared/buteco";
+import type { ButecoWebEnvelope } from "shared/butecoWeb";
 
 import { SimpleErrorBoundary } from "./SimpleErrorBoundary";
 
@@ -213,16 +214,18 @@ async function findVirtmicDeviceId(): Promise<string | null> {
 }
 
 /**
- * Arms the capture in main, then builds and starts a Buteco controller with the
- * real media/PC/virtmic/publish dependencies. Must run after the picker's
- * `submit` has resolved, so the main display-media handler is no longer pending
- * (see the armed-capture flow in `src/main/screenShare.ts`).
+ * Builds a Buteco controller with the real media/PC/virtmic/publish
+ * dependencies and starts it. The capture is armed in main only after the ICE
+ * fetch resolves, immediately before `controller.start` — must run after the
+ * picker's `submit` has resolved, so the main display-media handler is no
+ * longer pending (see the armed-capture flow in `src/main/screenShare.ts`).
  */
 export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult<void>> {
     try {
         await stopActiveButeco();
-        await VesktopNative.buteco.armCapture(pick.sourceId);
 
+        // ICE primeiro: a captura só é armada imediatamente antes do start, para
+        // o TTL de 10s do arm não expirar atrás do timeout de 15s do ICE.
         const ice = (await VesktopNative.buteco.web.ice()) as ButecoResult<ButecoIceServer[]>;
         if (!ice.ok) {
             setLatestButecoError(ice.error);
@@ -256,6 +259,8 @@ export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult
         activeButecoController = controller;
 
         const quality = clampQuality(pick, undefined);
+
+        await VesktopNative.buteco.armCapture(pick.sourceId);
 
         const res = await controller.start({
             sourceId: pick.sourceId,
@@ -335,6 +340,15 @@ onceReady.then(() => {
         if (type === "revoked" || type === "stop_requested" || type === "screen_lost") {
             void stopActiveButeco();
         }
+    });
+
+    // Mesma parada, agora pelo canal web: um `control: "stop"` chega quando a
+    // sala cai (leave, closed/replaced, disconnect do socket) durante a
+    // publicação web.
+    VesktopNative.buteco.web.onEvent(envelope => {
+        if ((envelope as ButecoWebEnvelope)?.control !== "stop") return;
+        setLatestButecoError(null);
+        void stopActiveButeco();
     });
 });
 
@@ -921,7 +935,8 @@ function ModalComponent({
         includeSources: "None"
     });
     const [butecoPick, setButecoPick] = useState<ButecoPick | null>(null);
-    const [butecoError] = useState<ButecoError | null>(() => getLatestButecoError());
+    // Lido a cada render: a última falha pode mudar enquanto o modal está aberto.
+    const butecoError = getLatestButecoError();
 
     const qualitySettings = (useVesktopState().screenshareQuality ??= {
         resolution: "720",

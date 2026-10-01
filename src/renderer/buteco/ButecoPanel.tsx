@@ -94,7 +94,14 @@ export function ButecoPanel({
     );
 
     if (!web.status.loggedIn) return <ButecoLogin />;
-    if (!web.room) return <ButecoRooms lobby={web.lobby} />;
+    if (!web.room)
+        return (
+            <ButecoRooms
+                lobby={web.lobby}
+                joinError={web.joinError}
+                displayName={web.status.user?.displayName ?? null}
+            />
+        );
 
     return (
         <div>
@@ -161,7 +168,15 @@ function ButecoLogin() {
     );
 }
 
-function ButecoRooms({ lobby }: { lobby: ButecoRoomSummary[] | null }) {
+function ButecoRooms({
+    lobby,
+    joinError,
+    displayName
+}: {
+    lobby: ButecoRoomSummary[] | null;
+    joinError: string | null;
+    displayName: string | null;
+}) {
     const [passwordFor, setPasswordFor] = useState<string | null>(null);
     const [password, setPassword] = useState("");
     const [creating, setCreating] = useState(false);
@@ -174,7 +189,9 @@ function ButecoRooms({ lobby }: { lobby: ButecoRoomSummary[] | null }) {
 
     return (
         <div>
+            {displayName ? <Paragraph>Conectado como {displayName}</Paragraph> : null}
             <HeadingTertiary>Salas abertas</HeadingTertiary>
+            {joinError ? <Paragraph>{joinError}</Paragraph> : null}
             {lobby === null ? (
                 <Paragraph>Carregando salas...</Paragraph>
             ) : lobby.length === 0 ? (
