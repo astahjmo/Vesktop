@@ -12,6 +12,7 @@ import { handle } from "../utils/ipcWrappers";
 import { armCapture, cancelCapture } from "./capture";
 import { exchangeCode, tokenVault } from "./pairing";
 import { connectHelper, type HelperConnection } from "./socket";
+import { createButecoStopper } from "./stop";
 import {
     type ButecoEventEnvelope,
     butecoStore,
@@ -63,20 +64,20 @@ function connectSocket() {
 }
 
 /**
- * Ends the active Buteco stream from the main process. Best-effort: it asks the
- * Ground to delete the screen resource (so the stream ends even if the renderer
- * is unresponsive) and always asks the renderer to tear down its local capture
- * via `control: "stop"` on `BUTECO_EVENT`. No-op when nothing is publishing.
+ * Ends the active Buteco stream from the main process (tray stop path). The core
+ * lives in `./stop` so it is unit-testable without an Electron mock; the store
+ * flag is cleared before the Ground `DELETE` so the tray item hides at once and
+ * re-entrant clicks are ignored.
  */
-export async function stopButecoPublish(): Promise<void> {
-    if (!butecoStore.getState().publishing) return;
+const butecoStopper = createButecoStopper({
+    store: butecoStore,
+    getToken: () => tokenVault.getToken(),
+    unpublish: token => unpublishScreen({ token }),
+    broadcast: control => broadcast(undefined, control)
+});
 
-    const token = tokenVault.getToken();
-    if (token) await unpublishScreen({ token }).catch(() => {});
-
-    butecoStore.setPublishing(false);
-    butecoStore.setPhase("idle");
-    broadcast(undefined, "stop");
+export function stopButecoPublish(): Promise<void> {
+    return butecoStopper.stop();
 }
 
 export function registerButeco() {
