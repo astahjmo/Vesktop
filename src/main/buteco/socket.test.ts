@@ -11,6 +11,7 @@ import { connectHelper } from "./socket";
 function fakeIo() {
     const handlers = new Map<string, Function>();
     const emitted: Array<[string, unknown]> = [];
+    // `connected` is intentionally mutable so tests can simulate a dropped socket.
     const socket = {
         connected: true,
         io: { on: vi.fn() },
@@ -46,6 +47,30 @@ describe("connectHelper", () => {
         socket.fire("connect");
         expect(ctrl.sendStatus("live", 1000)).toBe(true);
         expect(ctrl.sendStatus("live", 1500)).toBe(false);
+        expect(emitted.filter(([e]) => e === "helper:status").length).toBe(1);
+    });
+
+    it("keeps a single pending status while disconnected and flushes it once on connect", () => {
+        const { io, socket, emitted } = fakeIo();
+        const ctrl = connectHelper({ url: "https://g", token: "t", ioImpl: io, onEvent: () => {} });
+        socket.connected = false;
+
+        // Disconnected: no emit, just a pending slot.
+        expect(ctrl.sendStatus("live", 1000)).toBe(false);
+        expect(emitted.filter(([e]) => e === "helper:status").length).toBe(0);
+
+        // Still disconnected: single slot, latest phase wins, still no emit.
+        expect(ctrl.sendStatus("ready", 1100)).toBe(false);
+        expect(emitted.filter(([e]) => e === "helper:status").length).toBe(0);
+
+        // Reconnect: the latest pending phase is flushed exactly once.
+        socket.connected = true;
+        socket.fire("connect");
+        const statusEmits = emitted.filter(([e]) => e === "helper:status");
+        expect(statusEmits).toEqual([["helper:status", "ready"]]);
+
+        // The flush stamps lastStatusAt, so a send within 1s still respects the cap.
+        expect(ctrl.sendStatus("selecting", 1200)).toBe(false);
         expect(emitted.filter(([e]) => e === "helper:status").length).toBe(1);
     });
 
