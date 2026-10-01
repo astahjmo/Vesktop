@@ -1,7 +1,7 @@
 # Buteco Games Web — Sessão, Salas e Transmissão sem Código (Design)
 
 Data: 2026-10-01
-Status: aprovado em conversa; pendente de revisão do usuário
+Status: implementado (Fase 1)
 Relacionado: `docs/superpowers/specs/2026-10-01-buteco-games-vesktop-design.md` (Fase anterior: publicação via pairing code)
 
 ## Objetivo
