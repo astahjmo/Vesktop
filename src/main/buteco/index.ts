@@ -5,13 +5,13 @@
  */
 
 import { desktopCapturer, webContents } from "electron";
-import type { ButecoEvent, ButecoPublishMeta, ButecoResult, ButecoSource } from "shared/buteco";
+import type { ButecoEvent, ButecoPhase, ButecoPublishMeta, ButecoResult, ButecoSource } from "shared/buteco";
 import { IpcEvents } from "shared/IpcEvents";
 
 import { handle } from "../utils/ipcWrappers";
 import { armCapture, cancelCapture } from "./capture";
 import { exchangeCode, tokenVault } from "./pairing";
-import { connectHelper, type HelperConnection } from "./socket";
+import { connectHelper, type HelperConnection, safeSendStatus } from "./socket";
 import { createButecoStopper } from "./stop";
 import {
     type ButecoEventEnvelope,
@@ -32,6 +32,10 @@ let helper: HelperConnection | null = null;
  * stripped by the same rule), so the renderer can react to
  * revoked/stop_requested/screen_lost. `control: "stop"` additionally asks the
  * renderer to tear down the active Buteco capture.
+ *
+ * Each send is guarded: `webContents.getAllWebContents()` can return windows
+ * whose renderer died mid-iteration (a crashed/closed window must not abort the
+ * broadcast nor escape into a socket.io event handler).
  */
 function broadcast(event?: ButecoEvent, control?: "stop") {
     const envelope: ButecoEventEnvelope = {
@@ -40,8 +44,28 @@ function broadcast(event?: ButecoEvent, control?: "stop") {
         ...(control === undefined ? {} : { control })
     };
     for (const wc of webContents.getAllWebContents()) {
-        wc.send(IpcEvents.BUTECO_EVENT, envelope);
+        if (wc.isDestroyed()) continue;
+        try {
+            wc.send(IpcEvents.BUTECO_EVENT, envelope);
+        } catch {
+            // A renderer can die between the isDestroyed check and send().
+        }
     }
+}
+
+/**
+ * Mirrors a phase transition to the helper socket, applying the store change
+ * first so the two cannot diverge. `safeSendStatus` swallows transport errors;
+ * the store writes are guarded so a throwing subscriber cannot escape into the
+ * socket.io dispatch that triggered them.
+ */
+function setPhaseAndReport(phase: ButecoPhase) {
+    try {
+        butecoStore.setPhase(phase);
+    } catch {
+        // State is applied before subscribers run; keep the helper in sync.
+    }
+    safeSendStatus(helper, phase);
 }
 
 function connectSocket() {
@@ -53,14 +77,28 @@ function connectSocket() {
         url: session.socket.url,
         token: session.token,
         onEvent: event => {
-            butecoStore.emitEvent(event);
-            if (event.type === "revoked" || event.type === "stop_requested" || event.type === "screen_lost") {
-                butecoStore.setPublishing(false);
-                butecoStore.setPhase("idle");
+            try {
+                butecoStore.emitEvent(event);
+                if (event.type === "revoked" || event.type === "stop_requested" || event.type === "screen_lost") {
+                    butecoStore.setPublishing(false);
+                    setPhaseAndReport("idle");
+                } else if (event.type === "connection") {
+                    // Re-report the current phase on every connectivity change:
+                    // on connect this flushes any pending status; while offline
+                    // it re-arms the single pending slot for the next connect.
+                    safeSendStatus(helper, butecoStore.getState().phase);
+                }
+                broadcast(event);
+            } catch {
+                // A socket.io dispatch must never throw out of onEvent.
             }
-            broadcast(event);
         }
     });
+
+    // Advertise the current phase to the freshly created connection. If the
+    // socket is not yet connected this becomes its single pending status; the
+    // client flushes it once the handshake completes.
+    safeSendStatus(helper, butecoStore.getState().phase);
 }
 
 /**
@@ -82,23 +120,24 @@ export function stopButecoPublish(): Promise<void> {
 
 export function registerButeco() {
     handle(IpcEvents.BUTECO_PAIR, async (_, code: string): Promise<ButecoResult<ButecoWireSession>> => {
-        butecoStore.setPhase("pairing");
+        setPhaseAndReport("pairing");
         const res = await exchangeCode(code);
         if (res.ok) {
             tokenVault.set(res.value);
             butecoStore.setSession(res.value);
-            butecoStore.setPhase("ready");
+            setPhaseAndReport("ready");
             connectSocket();
             broadcast();
             return { ok: true, value: redactSession(res.value) };
         }
-        butecoStore.setPhase("idle");
+        setPhaseAndReport("idle");
         broadcast();
         return res;
     });
 
     handle(IpcEvents.BUTECO_UNPAIR, async () => {
         const token = tokenVault.getToken();
+        safeSendStatus(helper, "idle");
         helper?.close();
         helper = null;
         if (token) await unpair({ token });
@@ -127,14 +166,14 @@ export function registerButeco() {
     handle(IpcEvents.BUTECO_PUBLISH, async (_, offerSdp: string, meta: ButecoPublishMeta) => {
         const token = tokenVault.getToken();
         if (!token) return { ok: false, error: { code: "token_invalid", message: "Sem sessão." } };
-        butecoStore.setPhase("starting");
+        setPhaseAndReport("starting");
         const res = await publishScreen({ token, offerSdp, meta });
         if (res.ok) {
             butecoStore.setPublishing(true);
-            butecoStore.setPhase("live");
+            setPhaseAndReport("live");
         } else {
             butecoStore.setPublishing(false);
-            butecoStore.setPhase("idle");
+            setPhaseAndReport("idle");
         }
         broadcast();
         return res;
@@ -142,10 +181,10 @@ export function registerButeco() {
 
     handle(IpcEvents.BUTECO_UNPUBLISH, async () => {
         const token = tokenVault.getToken();
-        butecoStore.setPhase("stopping");
+        setPhaseAndReport("stopping");
         const res = token ? await unpublishScreen({ token }) : ({ ok: true, value: undefined } as const);
         butecoStore.setPublishing(false);
-        butecoStore.setPhase("idle");
+        setPhaseAndReport("idle");
         broadcast();
         return res;
     });

@@ -21,6 +21,19 @@ export interface HelperConnection {
     close(): void;
 }
 
+/**
+ * Reports a phase to the helper, swallowing any transport error so a status
+ * update can never throw into a phase transition or a socket.io dispatch.
+ * Returns whether a status was actually emitted (respecting the 1/s cap).
+ */
+export function safeSendStatus(connection: HelperConnection | null | undefined, phase: ButecoPhase): boolean {
+    try {
+        return connection?.sendStatus(phase) ?? false;
+    } catch {
+        return false;
+    }
+}
+
 export function connectHelper(opts: ConnectHelperOptions): HelperConnection {
     const ioImpl = opts.ioImpl ?? defaultIo;
     const socket = ioImpl(`${opts.url.replace(/\/$/, "")}/helper`, {

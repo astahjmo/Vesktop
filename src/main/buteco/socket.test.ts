@@ -6,7 +6,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { connectHelper } from "./socket";
+import { connectHelper, safeSendStatus } from "./socket";
 
 function fakeIo() {
     const handlers = new Map<string, Function>();
@@ -86,5 +86,29 @@ describe("connectHelper", () => {
             { type: "revoked", reason: "user_revoked" },
             { type: "stop_requested", by: "owner" }
         ]);
+    });
+});
+
+describe("safeSendStatus", () => {
+    it("is a no-op with no connection", () => {
+        expect(safeSendStatus(null, "live")).toBe(false);
+        expect(safeSendStatus(undefined, "idle")).toBe(false);
+    });
+
+    it("returns the connection's result", () => {
+        const connection = { sendStatus: vi.fn(() => true), close: vi.fn() };
+        expect(safeSendStatus(connection, "ready")).toBe(true);
+        expect(connection.sendStatus).toHaveBeenCalledWith("ready");
+    });
+
+    it("swallows transport errors so a caller cannot throw", () => {
+        const connection = {
+            sendStatus: vi.fn(() => {
+                throw new Error("socket closed");
+            }),
+            close: vi.fn()
+        };
+        expect(() => safeSendStatus(connection, "stopping")).not.toThrow();
+        expect(safeSendStatus(connection, "stopping")).toBe(false);
     });
 });
