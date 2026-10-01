@@ -8,8 +8,6 @@ import { closeModal, ContextMenuApi, Menu, Modal, openModal, useState } from "@v
 import {
     type ButecoPick,
     getLatestButecoError,
-    getLatestButecoSession,
-    pairButeco,
     setLatestButecoError,
     startButecoPublish,
     stopActiveButeco
@@ -17,12 +15,11 @@ import {
 import type { ButecoError } from "shared/buteco";
 
 import { ButecoPanel } from "./ButecoPanel";
-import { isRepairErrorCode } from "./messages";
 import { useButecoPublishing } from "./publishState";
 
 /**
  * A Discord-styled call-tray control for the Buteco share. While idle it opens
- * the standalone panel (pair, pick a source, quality and audio). While live it
+ * the standalone panel (login, room, source, quality and audio). While live it
  * turns green and opens a menu to switch the shared source — which republishes,
  * stopping the previous stream first — or to stop sharing. It never touches
  * Discord's Go Live path, so it keeps working when screensharing is restricted
@@ -102,7 +99,7 @@ export function ButecoCallButton() {
 }
 
 /**
- * Opens the Buteco panel in a standalone modal: pair, pick a source, quality
+ * Opens the Buteco panel in a standalone modal: login, room, source, quality
  * and audio, then publish — all without Discord's Go Live. Reopening it while a
  * stream is live republishes with the newly picked source (the controller stops
  * the previous stream first).
@@ -117,22 +114,7 @@ export function openButecoModal() {
 
 function ButecoModal({ modalProps }: { modalProps: any }) {
     const [pick, setPick] = useState<ButecoPick | null>(null);
-    const [paired, setPaired] = useState(() => getLatestButecoSession() !== null);
     const [error, setError] = useState<ButecoError | null>(() => getLatestButecoError());
-    const [needsRepair, setNeedsRepair] = useState(() => isRepairErrorCode(getLatestButecoError()?.code));
-
-    async function onPair(code: string): Promise<boolean> {
-        const res = await pairButeco(code);
-        if (!res.ok) {
-            setError(res.error);
-            if (isRepairErrorCode(res.error.code)) setNeedsRepair(true);
-            return false;
-        }
-        setPaired(true);
-        setError(null);
-        setNeedsRepair(false);
-        return true;
-    }
 
     async function onStart() {
         if (!pick) return;
@@ -159,16 +141,7 @@ function ButecoModal({ modalProps }: { modalProps: any }) {
                 { text: "Cancelar", variant: "secondary", onClick: () => modalProps.onClose() }
             ]}
         >
-            <ButecoPanel
-                pick={pick}
-                onPick={setPick}
-                paired={paired}
-                onPair={onPair}
-                error={error}
-                needsRepair={needsRepair}
-                session={getLatestButecoSession()}
-                onStart={onStart}
-            />
+            <ButecoPanel pick={pick} onPick={setPick} error={error} session={null} onStart={onStart} />
         </Modal>
     );
 }

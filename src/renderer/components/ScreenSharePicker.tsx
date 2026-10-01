@@ -36,7 +36,6 @@ import type { ButecoEventEnvelope, ButecoWireSession } from "main/buteco/store";
 import type { Dispatch, SetStateAction } from "react";
 import { ButecoPanel } from "renderer/buteco/ButecoPanel";
 import { type ButecoController, createButecoController, type StartOptions } from "renderer/buteco/controller";
-import { isRepairErrorCode } from "renderer/buteco/messages";
 import { setButecoPublishing } from "renderer/buteco/publishState";
 import { clampQuality } from "renderer/buteco/quality";
 import { addPatch } from "renderer/patches/shared";
@@ -915,33 +914,7 @@ function ModalComponent({
         includeSources: "None"
     });
     const [butecoPick, setButecoPick] = useState<ButecoPick | null>(null);
-    const [paired, setPaired] = useState(() => getLatestButecoSession() !== null);
-    const [butecoError, setButecoError] = useState<ButecoError | null>(() => getLatestButecoError());
-    // Sticky re-pair state: set by a stale session, cleared only by a successful
-    // pair, so a transient failure during re-pairing cannot drop the user back to
-    // the stale source list.
-    const [needsRepair, setNeedsRepair] = useState(() => isRepairErrorCode(getLatestButecoError()?.code));
-
-    async function handlePair(code: string): Promise<boolean> {
-        try {
-            const res = (await VesktopNative.buteco.pair(code)) as ButecoResult<ButecoWireSession>;
-            if (!res.ok) {
-                setButecoError(res.error);
-                if (isRepairErrorCode(res.error.code)) setNeedsRepair(true);
-                return false;
-            }
-
-            latestButecoSession = res.value;
-            setPaired(true);
-            setButecoError(null);
-            setLatestButecoError(null);
-            setNeedsRepair(false);
-            return true;
-        } catch {
-            setButecoError({ code: "network", message: "Falha ao parear." });
-            return false;
-        }
-    }
+    const [butecoError] = useState<ButecoError | null>(() => getLatestButecoError());
 
     const qualitySettings = (useVesktopState().screenshareQuality ??= {
         resolution: "720",
@@ -1049,11 +1022,8 @@ function ModalComponent({
                 <ButecoPanel
                     pick={butecoPick}
                     onPick={setButecoPick}
-                    paired={paired}
-                    onPair={handlePair}
                     error={butecoError}
-                    needsRepair={needsRepair}
-                    session={latestButecoSession}
+                    session={null}
                     onStart={() => {
                         if (!butecoPick) return;
                         submit({

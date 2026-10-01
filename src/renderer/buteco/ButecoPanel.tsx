@@ -6,16 +6,18 @@
 
 import { Button, Heading, HeadingTertiary, Paragraph } from "@vencord/types/components";
 import { useAwaiter, useForceUpdater } from "@vencord/types/utils";
-import { useState } from "@vencord/types/webpack/common";
+import { useEffect, useState } from "@vencord/types/webpack/common";
 import type { Node } from "@vencord/venmic";
 import type { ButecoWireSession } from "main/buteco/store";
 import type { ButecoPick } from "renderer/components/ScreenSharePicker";
 import { useSettings } from "renderer/settings";
 import { isLinux } from "renderer/utils";
 import type { ButecoError, ButecoSource } from "shared/buteco";
+import type { ButecoRoomState, ButecoRoomSummary } from "shared/butecoWeb";
 
-import { BUTECO_ERROR_MESSAGES, isRepairErrorCode } from "./messages";
+import { BUTECO_ERROR_MESSAGES } from "./messages";
 import { BUTECO_FPS, BUTECO_HEIGHTS, clampFps, clampHeight } from "./quality";
+import { useButecoWebState } from "./useButecoWeb";
 
 type VirtmicList = Awaited<ReturnType<typeof VesktopNative.virtmic.list>>;
 
@@ -69,108 +71,34 @@ function audioLabelFor(nodes: Node[]): string | null {
     return labels.length ? labels.join(", ") : null;
 }
 
-/**
- * Pairing step, shared by the initial unpaired state and the re-pair state
- * reached when a stored session goes stale (`token_invalid` / `client_outdated`).
- * When an error is present its mapped message replaces the intro text, so a
- * stale session reads as an explicit "pair again" prompt.
- */
-function PairForm({
-    onPair,
-    error,
-    intro
-}: {
-    onPair: (code: string) => Promise<boolean>;
-    error: ButecoError | null;
-    intro: string;
-}) {
-    const [code, setCode] = useState("");
-    const [pairing, setPairing] = useState(false);
-    const [pairFailed, setPairFailed] = useState(false);
-
-    async function handlePair() {
-        if (pairing) return;
-        setPairing(true);
-        setPairFailed(false);
-        try {
-            setPairFailed(!(await onPair(code)));
-        } finally {
-            setPairing(false);
-        }
-    }
-
-    return (
-        <div>
-            <HeadingTertiary>Conectar ao Buteco Games</HeadingTertiary>
-            <Paragraph>{intro}</Paragraph>
-            {error ? <Paragraph>{BUTECO_ERROR_MESSAGES[error.code]}</Paragraph> : null}
-            <input
-                value={code}
-                onChange={e => setCode(e.currentTarget.value)}
-                placeholder="CÓDIGO"
-                disabled={pairing}
-            />
-            <Button type="button" disabled={pairing || !code} onClick={handlePair}>
-                {pairing ? "Pareando..." : "Parear"}
-            </Button>
-            {pairFailed && !error ? <Paragraph>Código inválido ou falha de rede. Tente novamente.</Paragraph> : null}
-        </div>
-    );
-}
-
 export function ButecoPanel({
     pick,
     onPick,
     onStart,
-    paired,
-    onPair,
     error,
-    needsRepair,
     session
 }: {
     pick: ButecoPick | null;
     onPick: (p: ButecoPick) => void;
     onStart: () => void;
-    paired: boolean;
-    onPair: (code: string) => Promise<boolean>;
-    /** Latest Buteco failure to surface, mapped to a human-readable message. */
+    /** Última falha de publicação a exibir (a UI web cuida dos próprios erros). */
     error: ButecoError | null;
-    /**
-     * Sticky flag set on a stale session (token_invalid / client_outdated) and
-     * cleared only by a successful pair, so a transient non-repair failure while
-     * re-pairing keeps the pairing input on screen.
-     */
-    needsRepair: boolean;
-    /** Latest token-redacted session, source of the quality limits. */
+    /** Sessão legada (helper); na via web passa `null` e os defaults valem. */
     session: ButecoWireSession | null;
 }) {
-    const [sources] = useAwaiter<ButecoSource[]>(() => VesktopNative.buteco.listSources(), {
-        fallbackValue: [],
-        deps: []
-    });
+    const web = useButecoWebState();
 
-    // A stale session (token_invalid / client_outdated) can only be fixed by
-    // pairing again, so drop straight back to the pairing screen and say so.
-    // `needsRepair` keeps it there across a failed re-pair attempt (the latest
-    // error may then be a transient `network`/`invalid_code_format`).
-    if (paired && (needsRepair || isRepairErrorCode(error?.code))) {
-        return (
-            <PairForm
-                onPair={onPair}
-                error={error}
-                intro="Sua sessão expirou. Informe um novo código de pareamento exibido na sala do Buteco."
-            />
-        );
-    }
+    const [sources] = useAwaiter<ButecoSource[]>(
+        () => (web.room ? VesktopNative.buteco.listSources() : Promise.resolve([])),
+        { fallbackValue: [], deps: [web.room?.roomId] }
+    );
 
-    if (!paired) {
-        return (
-            <PairForm onPair={onPair} error={error} intro="Informe o código de pareamento exibido na sala do Buteco." />
-        );
-    }
+    if (!web.status.loggedIn) return <ButecoLogin />;
+    if (!web.room) return <ButecoRooms lobby={web.lobby} />;
 
     return (
         <div>
+            <ButecoRoomHeader room={web.room} />
             {error ? <Paragraph>{BUTECO_ERROR_MESSAGES[error.code]}</Paragraph> : null}
             <HeadingTertiary>Fonte</HeadingTertiary>
             <div>
@@ -204,6 +132,124 @@ export function ButecoPanel({
             <Button disabled={!pick} onClick={onStart}>
                 Iniciar
             </Button>
+        </div>
+    );
+}
+
+function ButecoLogin() {
+    const [busy, setBusy] = useState(false);
+    return (
+        <div>
+            <HeadingTertiary>Entrar no Buteco Games</HeadingTertiary>
+            <Paragraph>
+                Faça login uma vez no site da Buteco para entrar nas salas e compartilhar a tela sem código.
+            </Paragraph>
+            <Button
+                disabled={busy}
+                onClick={async () => {
+                    setBusy(true);
+                    try {
+                        await VesktopNative.buteco.web.login();
+                    } finally {
+                        setBusy(false);
+                    }
+                }}
+            >
+                {busy ? "Abrindo login..." : "Entrar"}
+            </Button>
+        </div>
+    );
+}
+
+function ButecoRooms({ lobby }: { lobby: ButecoRoomSummary[] | null }) {
+    const [passwordFor, setPasswordFor] = useState<string | null>(null);
+    const [password, setPassword] = useState("");
+    const [creating, setCreating] = useState(false);
+    const [name, setName] = useState("");
+    const [newPassword, setNewPassword] = useState("");
+
+    useEffect(() => {
+        void VesktopNative.buteco.web.lobby();
+    }, []);
+
+    return (
+        <div>
+            <HeadingTertiary>Salas abertas</HeadingTertiary>
+            {lobby === null ? (
+                <Paragraph>Carregando salas...</Paragraph>
+            ) : lobby.length === 0 ? (
+                <Paragraph>Nenhuma sala aberta agora.</Paragraph>
+            ) : (
+                lobby.map(room => (
+                    <div key={room.roomId}>
+                        <span>
+                            {room.name} · {room.memberCount} na sala {room.hasPassword ? "🔒" : ""}
+                        </span>
+                        {passwordFor === room.roomId ? (
+                            <>
+                                <input
+                                    type="password"
+                                    value={password}
+                                    placeholder="Senha"
+                                    onChange={e => setPassword(e.currentTarget.value)}
+                                />
+                                <Button onClick={() => void VesktopNative.buteco.web.joinRoom(room.roomId, password)}>
+                                    Entrar
+                                </Button>
+                            </>
+                        ) : (
+                            <Button
+                                onClick={() => {
+                                    if (room.hasPassword) {
+                                        setPasswordFor(room.roomId);
+                                        setPassword("");
+                                        return;
+                                    }
+                                    void VesktopNative.buteco.web.joinRoom(room.roomId);
+                                }}
+                            >
+                                Entrar
+                            </Button>
+                        )}
+                    </div>
+                ))
+            )}
+
+            <HeadingTertiary>Criar sala</HeadingTertiary>
+            {creating ? (
+                <>
+                    <input value={name} placeholder="Nome da sala" onChange={e => setName(e.currentTarget.value)} />
+                    <input
+                        value={newPassword}
+                        placeholder="Senha (opcional)"
+                        onChange={e => setNewPassword(e.currentTarget.value)}
+                    />
+                    <Button
+                        disabled={!name}
+                        onClick={() => void VesktopNative.buteco.web.createRoom(name, newPassword)}
+                    >
+                        Criar
+                    </Button>
+                </>
+            ) : (
+                <Button variant="secondary" onClick={() => setCreating(true)}>
+                    Criar sala
+                </Button>
+            )}
+        </div>
+    );
+}
+
+function ButecoRoomHeader({ room }: { room: ButecoRoomState }) {
+    return (
+        <div>
+            <HeadingTertiary>{room.name}</HeadingTertiary>
+            <Paragraph>
+                {room.members.length} na sala ·{" "}
+                <Button variant="secondary" onClick={() => void VesktopNative.buteco.web.leaveRoom()}>
+                    Sair da sala
+                </Button>
+            </Paragraph>
         </div>
     );
 }
