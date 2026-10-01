@@ -135,8 +135,6 @@ Expected: FAIL — módulo não existe.
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import type { ButecoIceServer } from "./buteco";
-
 /** Origem fixa do site; nunca configurável pelo renderer. */
 export const BUTECO_WEB_ORIGIN = "https://games.butecodosdevs.com";
 
@@ -249,9 +247,6 @@ export function mapRoomState(raw: unknown): ButecoRoomState | null {
         screenTransport: room.screenTransport === "cloudflare" ? "cloudflare" : "mediamtx"
     };
 }
-
-/** Reexport para consumidores que montam sessões sintéticas do controller. */
-export type { ButecoIceServer };
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
