@@ -22,19 +22,34 @@ export interface ButecoClientInfo {
     version: string;
     os: string;
     osVersion: string;
-    protocol: number;
+    protocol: typeof BUTECO_PROTOCOL;
     capabilities: { appAudio: false; mic: true; maxHeight: 1440; maxFps: 60 };
+}
+
+/**
+ * Resolves the version to advertise to the Ground.
+ *
+ * Prefers the real Vesktop app version from Electron's `app`. The `require` is
+ * lazy so the module still loads under the vitest node environment (where
+ * `electron` is not a usable API); when unavailable it falls back to the
+ * Electron/Node version reported by `process.versions`.
+ */
+export function appVersion(): string {
+    try {
+        const { app } = require("electron");
+        if (app?.getVersion) return app.getVersion();
+    } catch {}
+    return process.versions.electron ?? process.versions.node;
 }
 
 /**
  * Describes the helper client to the Ground.
  *
- * The client version is injectable so this module never has to import `electron`
- * (which is unavailable under the vitest node environment). Callers in the main
- * process pass `app.getVersion()`; under test the default falls back to the
- * Electron/Node version reported by `process.versions`.
+ * The client version is injectable so tests can pin it; the production default
+ * resolves through `appVersion()`, keeping `exchangeCode(code)` correct without
+ * changing its call contract.
  */
-export function clientInfo(version = process.versions.electron ?? process.versions.node): ButecoClientInfo {
+export function clientInfo(version = appVersion()): ButecoClientInfo {
     return {
         app: "buteco-share",
         version,

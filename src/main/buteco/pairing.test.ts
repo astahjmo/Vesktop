@@ -4,9 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { BUTECO_PROTOCOL } from "shared/buteco";
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
-import { clientInfo, createTokenVault, exchangeCode, normalizePairingCode } from "./pairing";
+import { appVersion, clientInfo, createTokenVault, exchangeCode, normalizePairingCode } from "./pairing";
 
 describe("normalizePairingCode", () => {
     it("uppercases and strips spaces/dashes", () => {
@@ -15,6 +16,14 @@ describe("normalizePairingCode", () => {
     it("rejects empty and invalid chars", () => {
         expect(normalizePairingCode("   ")).toBeNull();
         expect(normalizePairingCode("ab$c")).toBeNull();
+    });
+});
+
+describe("appVersion", () => {
+    it("falls back to the runtime version under plain node", () => {
+        // Electron's `app` is unavailable in the vitest node environment, so the
+        // require("electron") path must fail closed to the process version.
+        expect(appVersion()).toBe(process.versions.electron ?? process.versions.node);
     });
 });
 
@@ -28,6 +37,16 @@ describe("clientInfo", () => {
             protocol: 1,
             capabilities: { appAudio: false, mic: true, maxHeight: 1440, maxFps: 60 }
         });
+    });
+
+    it("defaults the version through appVersion()", () => {
+        expect(clientInfo().version).toBe(appVersion());
+        expect(clientInfo().version).toBeTruthy();
+    });
+
+    it("narrows protocol to the BUTECO_PROTOCOL literal", () => {
+        expectTypeOf(clientInfo().protocol).toEqualTypeOf<typeof BUTECO_PROTOCOL>();
+        expect(clientInfo().protocol).toBe(BUTECO_PROTOCOL);
     });
 });
 
@@ -84,6 +103,26 @@ describe("tokenVault", () => {
         vault.set({ token: "abc", tokenExpiresAt: "2100-01-01T00:00:00.000Z" } as any);
         expect(vault.getToken()).toBe("abc");
         expect(vault.getToken(Date.parse("2200-01-01T00:00:00.000Z"))).toBeNull();
+    });
+
+    it("returns null exactly at the expiry instant", () => {
+        const expiresAt = Date.parse("2100-01-01T00:00:00.000Z");
+        vault.set({ token: "abc", tokenExpiresAt: "2100-01-01T00:00:00.000Z" } as any);
+        expect(vault.getToken(expiresAt - 1)).toBe("abc");
+        expect(vault.getToken(expiresAt)).toBeNull();
+    });
+
+    it("exposes the session before set, after set, and after lazy expiry", () => {
+        expect(vault.getSession()).toBeNull();
+
+        const session = { token: "abc", tokenExpiresAt: "2100-01-01T00:00:00.000Z" } as any;
+        vault.set(session);
+        expect(vault.getSession()).toBe(session);
+
+        // getSession() itself does not enforce expiry; only getToken() nulls the
+        // stale session. Locking in the current (brief-specified) behavior.
+        vault.getToken(Date.parse("2200-01-01T00:00:00.000Z"));
+        expect(vault.getSession()).toBeNull();
     });
 
     it("clears", () => {
