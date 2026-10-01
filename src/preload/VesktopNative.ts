@@ -115,6 +115,7 @@ export const VesktopNative = {
             ice: () => invoke<ButecoResult<ButecoIceServer[]>>(IpcEvents.BUTECO_WEB_ICE),
             publish: (sdp: string) => invoke<ButecoResult<{ sdp: string }>>(IpcEvents.BUTECO_WEB_PUBLISH, sdp),
             unpublish: () => invoke<ButecoResult<void>>(IpcEvents.BUTECO_WEB_UNPUBLISH),
+            whep: (sdp: string) => invoke<ButecoResult<{ sdp: string }>>(IpcEvents.BUTECO_WEB_WHEP, sdp),
             onEvent: (cb: (envelope: ButecoWebEnvelope) => void) => {
                 ipcRenderer.on(IpcEvents.BUTECO_WEB_EVENT, (_e, envelope) => cb(envelope));
             }

@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import "./viewer";
+
 import { onceReady } from "@vencord/types/webpack";
 import { useEffect, useState } from "@vencord/types/webpack/common";
 import type { ButecoWebEnvelope, ButecoWebState } from "shared/butecoWeb";

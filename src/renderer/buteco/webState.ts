@@ -4,10 +4,15 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import type { ButecoWebEnvelope, ButecoWebState } from "shared/butecoWeb";
+import type { ButecoRoomMember, ButecoRoomState, ButecoWebEnvelope, ButecoWebState } from "shared/butecoWeb";
 
 function initialState(): ButecoWebState {
     return { status: { loggedIn: false, user: null }, lobby: null, room: null, joinError: null };
+}
+
+/** Primeiro membro com tela ativa na sala (o que o viewer deve assistir). */
+export function findRoomStream(room: ButecoRoomState | null): ButecoRoomMember | null {
+    return room?.members.find(member => member.screenId) ?? null;
 }
 
 let state: ButecoWebState = initialState();

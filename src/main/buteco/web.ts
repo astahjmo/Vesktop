@@ -11,7 +11,7 @@ import { IpcEvents } from "shared/IpcEvents";
 import { handle } from "../utils/ipcWrappers";
 import { createRoomSocket, type RoomSocket } from "./roomSocket";
 import { butecoStore } from "./store";
-import { fetchWebIce, webCloseConnection, webPublishScreen, webReleaseScreen } from "./webApi";
+import { fetchWebIce, webCloseConnection, webPublishScreen, webReleaseScreen, webSubscribeScreen } from "./webApi";
 import { getWebCookieHeader, getWebStatus, openWebLoginWindow } from "./webSession";
 import { butecoWebStore } from "./webStore";
 
@@ -169,6 +169,17 @@ export function registerButecoWeb() {
         } else if (res.error.code === "token_invalid") {
             markSessionExpired();
         }
+        return res;
+    });
+
+    handle(IpcEvents.BUTECO_WEB_WHEP, async (_, sdp: string) => {
+        const { room } = butecoWebStore.getState();
+        const socketId = roomSocket?.getSocketId() ?? null;
+        if (!room || !socketId) {
+            return { ok: false, error: { code: "token_invalid", message: "Entre numa sala primeiro." } };
+        }
+        const res = await webSubscribeScreen(room.roomId, socketId, sdp);
+        if (!res.ok && res.error.code === "token_invalid") markSessionExpired();
         return res;
     });
 

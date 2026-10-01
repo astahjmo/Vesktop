@@ -6,7 +6,42 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyButecoWebEnvelope, getButecoWebState, resetButecoWebState, subscribeButecoWeb } from "./webState";
+import {
+    applyButecoWebEnvelope,
+    findRoomStream,
+    getButecoWebState,
+    resetButecoWebState,
+    subscribeButecoWeb
+} from "./webState";
+
+describe("findRoomStream", () => {
+    it("returns the first member with an active screen", () => {
+        const member = findRoomStream({
+            roomId: "r1",
+            name: "Mesa",
+            members: [
+                { userId: "u1", displayName: "Ana" },
+                { userId: "u2", displayName: "Bia", screenId: "s1" }
+            ],
+            screenAudioAllowed: true,
+            screenTransport: "mediamtx"
+        });
+        expect(member?.userId).toBe("u2");
+    });
+
+    it("returns null without a room or stream", () => {
+        expect(findRoomStream(null)).toBeNull();
+        expect(
+            findRoomStream({
+                roomId: "r1",
+                name: "Mesa",
+                members: [{ userId: "u1", displayName: "Ana", screenId: null }],
+                screenAudioAllowed: true,
+                screenTransport: "mediamtx"
+            })
+        ).toBeNull();
+    });
+});
 
 describe("butecoWebState", () => {
     beforeEach(() => resetButecoWebState());
