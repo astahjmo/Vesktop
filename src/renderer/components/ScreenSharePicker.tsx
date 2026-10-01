@@ -39,7 +39,7 @@ import { type ButecoController, createButecoController, type StartOptions } from
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
-import type { ButecoResult, ButecoSession } from "shared/buteco";
+import type { ButecoError, ButecoResult, ButecoSession } from "shared/buteco";
 
 import { SimpleErrorBoundary } from "./SimpleErrorBoundary";
 
@@ -153,6 +153,21 @@ export function getLatestButecoSession(): ButecoWireSession | null {
     return latestButecoSession;
 }
 
+/**
+ * Last Buteco error seen after the picker closed, so reopening it surfaces the
+ * failure instead of silently looking paired. The wire protocol carries no error
+ * events, so publish/start failures are the only source that outlives the modal.
+ */
+let latestButecoError: ButecoError | null = null;
+
+export function getLatestButecoError(): ButecoError | null {
+    return latestButecoError;
+}
+
+export function setLatestButecoError(error: ButecoError | null): void {
+    latestButecoError = error;
+}
+
 /** Idempotently stops the active Buteco stream, if one is publishing. */
 export async function stopActiveButeco(): Promise<void> {
     const controller = activeButecoController;
@@ -216,14 +231,18 @@ export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult
             // arm (e.g. no session); release it so it cannot leak into a later,
             // unrelated capture. Consumed arms are a harmless no-op.
             await VesktopNative.buteco.cancelCapture();
+            setLatestButecoError(res.error);
             return res;
         }
 
+        setLatestButecoError(null);
         return { ok: true, value: undefined };
     } catch {
         await stopActiveButeco();
         await VesktopNative.buteco.cancelCapture();
-        return { ok: false, error: { code: "network", message: "Falha ao iniciar a captura." } };
+        const error: ButecoError = { code: "network", message: "Falha ao iniciar a captura." };
+        setLatestButecoError(error);
+        return { ok: false, error };
     }
 }
 
@@ -850,6 +869,7 @@ function ModalComponent({
     });
     const [butecoPick, setButecoPick] = useState<ButecoPick | null>(null);
     const [paired, setPaired] = useState(() => getLatestButecoSession() !== null);
+    const [butecoError, setButecoError] = useState<ButecoError | null>(() => getLatestButecoError());
     const qualitySettings = (useVesktopState().screenshareQuality ??= {
         resolution: "720",
         frameRate: "30"
@@ -858,12 +878,18 @@ function ModalComponent({
     async function handlePair(code: string): Promise<boolean> {
         try {
             const res = (await VesktopNative.buteco.pair(code)) as ButecoResult<ButecoWireSession>;
-            if (!res.ok) return false;
+            if (!res.ok) {
+                setButecoError(res.error);
+                return false;
+            }
 
             latestButecoSession = res.value;
             setPaired(true);
+            setButecoError(null);
+            setLatestButecoError(null);
             return true;
         } catch {
+            setButecoError({ code: "network", message: "Falha ao parear." });
             return false;
         }
     }
@@ -928,7 +954,9 @@ function ModalComponent({
         close();
     }
 
-    const showGoBack = selected && !skipPicker;
+    // In Buteco mode the source is chosen inside the panel, so the two-step
+    // Back/selection flow does not apply.
+    const showGoBack = selected && !skipPicker && mode !== "buteco";
     return (
         <Modal
             {...modalProps}
@@ -952,8 +980,10 @@ function ModalComponent({
                 {(["native", "buteco"] as const).map(m => (
                     <button
                         key={m}
+                        type="button"
                         className={cl("mode-option")}
                         data-selected={mode === m}
+                        aria-pressed={mode === m}
                         onClick={() => (Settings.butecoMode = m)}
                     >
                         {m === "native" ? "Native" : "Buteco Games"}
@@ -967,6 +997,7 @@ function ModalComponent({
                     onPick={setButecoPick}
                     paired={paired}
                     onPair={handlePair}
+                    error={butecoError}
                     onStart={() => {
                         if (!butecoPick) return;
                         submit({

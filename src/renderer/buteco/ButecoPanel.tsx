@@ -11,7 +11,9 @@ import type { Node } from "@vencord/venmic";
 import type { ButecoPick } from "renderer/components/ScreenSharePicker";
 import { useSettings } from "renderer/settings";
 import { isLinux } from "renderer/utils";
-import type { ButecoSource } from "shared/buteco";
+import type { ButecoError, ButecoSource } from "shared/buteco";
+
+import { BUTECO_ERROR_MESSAGES, isRepairErrorCode } from "./messages";
 
 type VirtmicList = Awaited<ReturnType<typeof VesktopNative.virtmic.list>>;
 
@@ -65,26 +67,24 @@ function audioLabelFor(nodes: Node[]): string | null {
     return labels.length ? labels.join(", ") : null;
 }
 
-export function ButecoPanel({
-    pick,
-    onPick,
-    onStart,
-    paired,
-    onPair
+/**
+ * Pairing step, shared by the initial unpaired state and the re-pair state
+ * reached when a stored session goes stale (`token_invalid` / `client_outdated`).
+ * When an error is present its mapped message replaces the intro text, so a
+ * stale session reads as an explicit "pair again" prompt.
+ */
+function PairForm({
+    onPair,
+    error,
+    intro
 }: {
-    pick: ButecoPick | null;
-    onPick: (p: ButecoPick) => void;
-    onStart: () => void;
-    paired: boolean;
     onPair: (code: string) => Promise<boolean>;
+    error: ButecoError | null;
+    intro: string;
 }) {
     const [code, setCode] = useState("");
     const [pairing, setPairing] = useState(false);
     const [pairFailed, setPairFailed] = useState(false);
-    const [sources] = useAwaiter<ButecoSource[]>(() => VesktopNative.buteco.listSources(), {
-        fallbackValue: [],
-        deps: []
-    });
 
     async function handlePair() {
         if (pairing) return;
@@ -97,27 +97,67 @@ export function ButecoPanel({
         }
     }
 
+    return (
+        <div>
+            <HeadingTertiary>Conectar ao Buteco Games</HeadingTertiary>
+            <Paragraph>{intro}</Paragraph>
+            {error ? <Paragraph>{BUTECO_ERROR_MESSAGES[error.code]}</Paragraph> : null}
+            <input
+                value={code}
+                onChange={e => setCode(e.currentTarget.value)}
+                placeholder="CÓDIGO"
+                disabled={pairing}
+            />
+            <Button type="button" disabled={pairing || !code} onClick={handlePair}>
+                {pairing ? "Pareando..." : "Parear"}
+            </Button>
+            {pairFailed && !error ? <Paragraph>Código inválido ou falha de rede. Tente novamente.</Paragraph> : null}
+        </div>
+    );
+}
+
+export function ButecoPanel({
+    pick,
+    onPick,
+    onStart,
+    paired,
+    onPair,
+    error
+}: {
+    pick: ButecoPick | null;
+    onPick: (p: ButecoPick) => void;
+    onStart: () => void;
+    paired: boolean;
+    onPair: (code: string) => Promise<boolean>;
+    /** Latest Buteco failure to surface, mapped to a human-readable message. */
+    error: ButecoError | null;
+}) {
+    const [sources] = useAwaiter<ButecoSource[]>(() => VesktopNative.buteco.listSources(), {
+        fallbackValue: [],
+        deps: []
+    });
+
+    // A stale session (token_invalid / client_outdated) can only be fixed by
+    // pairing again, so drop straight back to the pairing screen and say so.
+    if (paired && error && isRepairErrorCode(error.code)) {
+        return (
+            <PairForm
+                onPair={onPair}
+                error={error}
+                intro="Sua sessão expirou. Informe um novo código de pareamento exibido na sala do Buteco."
+            />
+        );
+    }
+
     if (!paired) {
         return (
-            <div>
-                <HeadingTertiary>Conectar ao Buteco Games</HeadingTertiary>
-                <Paragraph>Informe o código de pareamento exibido na sala do Buteco.</Paragraph>
-                <input
-                    value={code}
-                    onChange={e => setCode(e.currentTarget.value)}
-                    placeholder="CÓDIGO"
-                    disabled={pairing}
-                />
-                <Button disabled={pairing || !code} onClick={handlePair}>
-                    {pairing ? "Pareando..." : "Parear"}
-                </Button>
-                {pairFailed ? <Paragraph>Código inválido ou falha de rede. Tente novamente.</Paragraph> : null}
-            </div>
+            <PairForm onPair={onPair} error={error} intro="Informe o código de pareamento exibido na sala do Buteco." />
         );
     }
 
     return (
         <div>
+            {error ? <Paragraph>{BUTECO_ERROR_MESSAGES[error.code]}</Paragraph> : null}
             <HeadingTertiary>Fonte</HeadingTertiary>
             <div>
                 {sources.map(s => (
@@ -197,7 +237,26 @@ function ButecoAudioPicker({ pick, onPick }: { pick: ButecoPick; onPick: (p: But
             {enabled ? (
                 <>
                     {!venmic.ok ? (
-                        <Paragraph>Não foi possível listar as fontes de áudio.</Paragraph>
+                        venmic.isGlibCxxOutdated ? (
+                            <Paragraph>
+                                Não foi possível listar as fontes de áudio porque sua biblioteca C++ é antiga demais
+                                para rodar o{" "}
+                                <a href="https://github.com/Vencord/venmic" target="_blank" rel="noreferrer">
+                                    venmic
+                                </a>
+                                . Veja{" "}
+                                <a
+                                    href="https://gist.github.com/Vendicated/b655044ffbb16b2716095a448c6d827a"
+                                    target="_blank"
+                                    rel="noreferrer"
+                                >
+                                    este guia
+                                </a>{" "}
+                                para possíveis soluções.
+                            </Paragraph>
+                        ) : (
+                            <Paragraph>Não foi possível listar as fontes de áudio.</Paragraph>
+                        )
                     ) : !venmic.hasPipewirePulse ? (
                         <Paragraph>
                             Aviso: pipewire-pulse não encontrado; apenas apps sob PipeWire terão o áudio compartilhado.
