@@ -69,6 +69,11 @@ export function registerScreenShareHandler() {
                 }).catch(() => null);
 
                 if (stream === null) return callback({});
+
+                if (stream.mode === "buteco") {
+                    // Handled by the Buteco module; do not send media to Discord's SFU.
+                    return callback({});
+                }
             }
 
             callback(video ? { video: sources[0] } : {});

@@ -155,7 +155,8 @@ export function openScreenSharePicker(screens: Source[], skipPicker: boolean) {
                     submit={async v => {
                         didSubmit = true;
 
-                        if (v.includeSources && v.includeSources !== "None") {
+                        // The Buteco path manages its own audio; never start the virtmic for it.
+                        if (v.mode !== "buteco" && v.includeSources && v.includeSources !== "None") {
                             if (v.includeSources === "Entire System") {
                                 await VesktopNative.virtmic.startSystem(
                                     !v.excludeSources || isSpecialSource(v.excludeSources) ? [] : v.excludeSources
