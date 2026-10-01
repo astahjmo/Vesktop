@@ -24,16 +24,31 @@ export interface RoomSocket {
 }
 
 /**
+ * O WAF/servidor do site rejeita o handshake sem `Origin` + `User-Agent` de
+ * navegador (recebemos `Forbidden` no namespace mesmo com o cookie correto).
+ * Um UA estável de Chrome desktop é suficiente.
+ */
+const BROWSER_USER_AGENT =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
+
+/**
  * Socket.IO do site (namespace default), autenticado por cookie via
- * `extraHeaders` — suportado pelo transport websocket do engine.io-client no
- * Node. O `socketId` é o identificador usado nos pedidos WHIP/WHEP.
+ * `extraHeaders` — suportado pelos transports do engine.io-client no Node
+ * (websocket e polling). O `socketId` é o identificador usado nos pedidos
+ * WHIP/WHEP.
  */
 export function createRoomSocket(opts: CreateRoomSocketOptions): RoomSocket {
     const ioImpl = opts.ioImpl ?? defaultIo;
     const socket = ioImpl(BUTECO_WEB_ORIGIN, {
-        withCredentials: true,
+        // `withCredentials` é um flag de browser: no Node ele liga um cookie jar
+        // interno do engine.io-client que atropela o header Cookie explícito
+        // (resultado: "Authentication required"). Aqui o cookie vai só no header.
         transports: ["websocket", "polling"],
-        ...(opts.cookieHeader ? { extraHeaders: { Cookie: opts.cookieHeader } } : {})
+        extraHeaders: {
+            Origin: BUTECO_WEB_ORIGIN,
+            "User-Agent": BROWSER_USER_AGENT,
+            ...(opts.cookieHeader ? { Cookie: opts.cookieHeader } : {})
+        }
     });
 
     // Diferencia a queda de transporte de um `close()` nosso: só a primeira

@@ -24,17 +24,29 @@ function fakeIo() {
 }
 
 describe("createRoomSocket", () => {
-    it("connects with cookie header and subscribes the lobby on connect", () => {
+    it("connects with browser headers and subscribes the lobby on connect", () => {
         const { io, socket, emitted } = fakeIo();
         createRoomSocket({ cookieHeader: "c=1", ioImpl: io, onEvent: () => {} });
 
-        expect(io).toHaveBeenCalledWith(
-            "https://games.butecodosdevs.com",
-            expect.objectContaining({ transports: ["websocket", "polling"], extraHeaders: { Cookie: "c=1" } })
-        );
+        const [, options] = io.mock.calls[0];
+        expect(options.transports).toEqual(["websocket", "polling"]);
+        expect(options.withCredentials).toBeUndefined();
+        expect(options.extraHeaders.Cookie).toBe("c=1");
+        expect(options.extraHeaders.Origin).toBe("https://games.butecodosdevs.com");
+        expect(options.extraHeaders["User-Agent"]).toMatch(/Mozilla/);
 
         socket.fire("connect");
         expect(emitted).toContainEqual(["screenshare:subscribe", undefined]);
+    });
+
+    it("always sends Origin and User-Agent, cookie only when present", () => {
+        const { io } = fakeIo();
+        createRoomSocket({ cookieHeader: null, ioImpl: io, onEvent: () => {} });
+
+        const [, options] = io.mock.calls[0];
+        expect(options.extraHeaders.Origin).toBe("https://games.butecodosdevs.com");
+        expect(options.extraHeaders["User-Agent"]).toMatch(/Mozilla/);
+        expect(options.extraHeaders.Cookie).toBeUndefined();
     });
 
     it("forwards lobby and room state", () => {

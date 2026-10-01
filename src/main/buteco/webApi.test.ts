@@ -6,7 +6,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { fetchWebIce, webPublishScreen, webReleaseScreen, webRequest } from "./webApi";
+import { fetchWebIce, webPublishScreen, webReleaseScreen, webRequest, webSubscribeScreen } from "./webApi";
 import { getWebCookieHeader } from "./webSession";
 
 vi.mock("./webSession", () => ({
@@ -72,6 +72,15 @@ describe("web endpoints", () => {
         expect(res).toEqual({ ok: true, value: { sdp: "v=0 answer" } });
         const [url, init] = (fetchImpl as any).mock.calls[0];
         expect(url).toBe("https://games.butecodosdevs.com/api/compartilhagram/sfu/screen/whip");
+        expect(JSON.parse(init.body)).toEqual({ roomId: "r1", socketId: "s1", sdp: "v=0 offer" });
+    });
+
+    it("subscribes via WHEP with roomId/socketId/sdp", async () => {
+        const fetchImpl = fakeFetch(200, { sdp: "v=0 answer" });
+        const res = await webSubscribeScreen("r1", "s1", "v=0 offer", { cookieHeader: "c=1", fetchImpl });
+        expect(res).toEqual({ ok: true, value: { sdp: "v=0 answer" } });
+        const [url, init] = (fetchImpl as any).mock.calls[0];
+        expect(url).toBe("https://games.butecodosdevs.com/api/compartilhagram/sfu/screen/whep");
         expect(JSON.parse(init.body)).toEqual({ roomId: "r1", socketId: "s1", sdp: "v=0 offer" });
     });
 

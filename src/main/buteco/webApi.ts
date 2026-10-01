@@ -33,7 +33,14 @@ export async function webRequest<T = any>(path: string, opts: WebRequestOptions)
     }
     if (!cookie) return { ok: false, error: { code: "token_invalid", message: "Entre no Buteco Games primeiro." } };
 
-    const headers: Record<string, string> = { accept: "application/json", cookie };
+    // Origin/Referer da própria origem do site: mesma defesa de CSRF que o
+    // navegador manda e que o socket já exige no handshake.
+    const headers: Record<string, string> = {
+        accept: "application/json",
+        cookie,
+        origin: BUTECO_WEB_ORIGIN,
+        referer: `${BUTECO_WEB_ORIGIN}/`
+    };
     if (opts.body !== undefined) headers["content-type"] = "application/json";
 
     let res: Response;
@@ -75,6 +82,20 @@ export function webPublishScreen(
     deps: WebApiDeps = {}
 ): Promise<ButecoResult<{ sdp: string }>> {
     return webRequest("/api/compartilhagram/sfu/screen/whip", {
+        method: "POST",
+        body: { roomId, socketId, sdp },
+        ...deps
+    });
+}
+
+/** Assiste a tela publicada na sala (WHEP): oferta do viewer → answer do SFU. */
+export function webSubscribeScreen(
+    roomId: string,
+    socketId: string,
+    sdp: string,
+    deps: WebApiDeps = {}
+): Promise<ButecoResult<{ sdp: string }>> {
+    return webRequest("/api/compartilhagram/sfu/screen/whep", {
         method: "POST",
         body: { roomId, socketId, sdp },
         ...deps
