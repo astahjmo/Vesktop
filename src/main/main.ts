@@ -13,6 +13,7 @@ import "./vesktopProtocol";
 import { app, BrowserWindow, nativeTheme } from "electron";
 
 import { registerButeco } from "./buteco";
+import { registerButecoWeb } from "./buteco/web";
 import { DATA_DIR } from "./constants";
 import { createFirstLaunchTour } from "./firstLaunch";
 import { createWindows, mainWin } from "./mainWindow";
@@ -106,6 +107,7 @@ function init() {
 
         registerScreenShareHandler();
         registerButeco();
+        registerButecoWeb();
         registerMediaPermissionsHandler();
 
         bootstrap();

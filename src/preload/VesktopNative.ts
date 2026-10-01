@@ -8,7 +8,8 @@ import type { Node } from "@vencord/venmic";
 import { ipcRenderer } from "electron/renderer";
 import type { ButecoWireSession } from "main/buteco/store";
 import type { IpcMessage, IpcResponse } from "main/ipcCommands";
-import type { ButecoResult } from "shared/buteco";
+import type { ButecoIceServer, ButecoResult } from "shared/buteco";
+import type { ButecoRoomSummary, ButecoWebEnvelope, ButecoWebStatus } from "shared/butecoWeb";
 import type { Settings } from "shared/settings";
 
 import { IpcEvents } from "../shared/IpcEvents";
@@ -101,6 +102,22 @@ export const VesktopNative = {
         refreshIce: () => invoke(IpcEvents.BUTECO_REFRESH_ICE),
         onEvent: (cb: (envelope: unknown) => void) => {
             ipcRenderer.on(IpcEvents.BUTECO_EVENT, (_e, envelope) => cb(envelope));
+        },
+        web: {
+            status: () => invoke<ButecoWebStatus>(IpcEvents.BUTECO_WEB_STATUS),
+            login: () => invoke<ButecoWebStatus>(IpcEvents.BUTECO_WEB_LOGIN),
+            lobby: () => invoke<ButecoRoomSummary[] | null>(IpcEvents.BUTECO_WEB_LOBBY),
+            joinRoom: (roomId: string, password?: string) =>
+                invoke<ButecoResult<void>>(IpcEvents.BUTECO_ROOM_JOIN, roomId, password ?? ""),
+            createRoom: (name: string, password?: string) =>
+                invoke<ButecoResult<void>>(IpcEvents.BUTECO_ROOM_CREATE, name, password ?? ""),
+            leaveRoom: () => invoke<ButecoResult<void>>(IpcEvents.BUTECO_ROOM_LEAVE),
+            ice: () => invoke<ButecoResult<ButecoIceServer[]>>(IpcEvents.BUTECO_WEB_ICE),
+            publish: (sdp: string) => invoke<ButecoResult<{ sdp: string }>>(IpcEvents.BUTECO_WEB_PUBLISH, sdp),
+            unpublish: () => invoke<ButecoResult<void>>(IpcEvents.BUTECO_WEB_UNPUBLISH),
+            onEvent: (cb: (envelope: ButecoWebEnvelope) => void) => {
+                ipcRenderer.on(IpcEvents.BUTECO_WEB_EVENT, (_e, envelope) => cb(envelope));
+            }
         }
     },
     /** only available on Linux. */
