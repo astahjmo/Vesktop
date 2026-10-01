@@ -19,6 +19,8 @@ export interface ButecoStore {
     setPublishing(value: boolean): void;
     emitEvent(event: ButecoEvent): void;
     onEvent(cb: (event: ButecoEvent) => void): () => void;
+    /** Subscribes to state snapshots; the callback fires after every mutation. */
+    subscribe(cb: (state: ButecoState) => void): () => void;
     clear(): void;
 }
 
@@ -38,6 +40,13 @@ export type ButecoWireEvent =
 export interface ButecoEventEnvelope {
     state: ButecoWireState;
     event: ButecoWireEvent | undefined;
+    /**
+     * Optional control message carried alongside a snapshot. `"stop"` asks the
+     * renderer to tear down the active Buteco publish (local tracks, peer
+     * connection, virtmic); main also ends the SFU stream itself so the stream
+     * stops even when the renderer is unresponsive.
+     */
+    control?: "stop";
 }
 
 /** The single redaction rule: strips the bearer token from a session. */
@@ -61,18 +70,29 @@ export function toWireEvent(event: ButecoEvent): ButecoWireEvent {
 export function createButecoStore(): ButecoStore {
     let state: ButecoState = { phase: "idle", session: null, publishing: false };
     const listeners = new Set<(event: ButecoEvent) => void>();
+    const stateListeners = new Set<(state: ButecoState) => void>();
+
+    /** Applies a state mutation and notifies subscribers with the new snapshot. */
+    function mutate(next: ButecoState) {
+        state = next;
+        stateListeners.forEach(cb => cb(state));
+    }
 
     return {
         getState: () => state,
-        setPhase: phase => (state = { ...state, phase }),
-        setSession: session => (state = { ...state, session }),
-        setPublishing: publishing => (state = { ...state, publishing }),
+        setPhase: phase => mutate({ ...state, phase }),
+        setSession: session => mutate({ ...state, session }),
+        setPublishing: publishing => mutate({ ...state, publishing }),
         emitEvent: event => listeners.forEach(cb => cb(event)),
         onEvent(cb) {
             listeners.add(cb);
             return () => listeners.delete(cb);
         },
-        clear: () => (state = { phase: "idle", session: null, publishing: false })
+        subscribe(cb) {
+            stateListeners.add(cb);
+            return () => stateListeners.delete(cb);
+        },
+        clear: () => mutate({ phase: "idle", session: null, publishing: false })
     };
 }
 

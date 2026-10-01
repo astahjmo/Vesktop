@@ -4,9 +4,11 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { app, BrowserWindow, Menu, Tray } from "electron";
+import { app, BrowserWindow, Menu, type MenuItemConstructorOptions, Tray } from "electron";
 
 import { createAboutWindow } from "./about";
+import { stopButecoPublish } from "./buteco";
+import { butecoStore } from "./buteco/store";
 import { AppEvents } from "./events";
 import { Settings } from "./settings";
 import { resolveAssetPath } from "./userAssets";
@@ -15,6 +17,8 @@ import { downloadVencordFiles } from "./utils/vencordLoader";
 
 let tray: Tray;
 let trayVariant: "tray" | "trayUnread" = "tray";
+let isQuittingRef: (val: boolean) => void = () => {};
+let butecoUnsubscribe: (() => void) | null = null;
 
 AppEvents.on("userAssetChanged", async asset => {
     if (tray && (asset === "tray" || asset === "trayUnread")) {
@@ -32,16 +36,16 @@ AppEvents.on("setTrayVariant", async variant => {
 });
 
 export function destroyTray() {
+    butecoUnsubscribe?.();
+    butecoUnsubscribe = null;
     tray?.destroy();
 }
 
-export async function initTray(win: BrowserWindow, setIsQuitting: (val: boolean) => void) {
-    const onTrayClick = () => {
-        if (Settings.store.clickTrayToShowHide && win.isVisible()) win.hide();
-        else win.show();
-    };
+/** Builds the tray menu; the Buteco stop item only exists while publishing. */
+function buildTrayMenu(win: BrowserWindow): Menu {
+    const { publishing } = butecoStore.getState();
 
-    const trayMenu = Menu.buildFromTemplate([
+    return Menu.buildFromTemplate([
         {
             label: "Open",
             click() {
@@ -66,6 +70,17 @@ export async function initTray(win: BrowserWindow, setIsQuitting: (val: boolean)
                 await clearData(win);
             }
         },
+        ...(publishing
+            ? ([
+                  { type: "separator" },
+                  {
+                      label: "Parar compartilhamento Buteco",
+                      click() {
+                          void stopButecoPublish();
+                      }
+                  }
+              ] satisfies MenuItemConstructorOptions[])
+            : []),
         {
             type: "separator"
         },
@@ -79,14 +94,37 @@ export async function initTray(win: BrowserWindow, setIsQuitting: (val: boolean)
         {
             label: "Quit",
             click() {
-                setIsQuitting(true);
+                isQuittingRef(true);
                 app.quit();
             }
         }
     ]);
+}
+
+function rebuildTrayMenu(win: BrowserWindow) {
+    if (tray) tray.setContextMenu(buildTrayMenu(win));
+}
+
+export async function initTray(win: BrowserWindow, setIsQuitting: (val: boolean) => void) {
+    const onTrayClick = () => {
+        if (Settings.store.clickTrayToShowHide && win.isVisible()) win.hide();
+        else win.show();
+    };
+
+    isQuittingRef = setIsQuitting;
 
     tray = new Tray(await resolveAssetPath(trayVariant));
     tray.setToolTip("Vesktop");
-    tray.setContextMenu(trayMenu);
+    tray.setContextMenu(buildTrayMenu(win));
     tray.on("click", onTrayClick);
+
+    // Rebuild only when the publishing flag flips, so the stop item appears and
+    // disappears with the Buteco stream.
+    butecoUnsubscribe?.();
+    let wasPublishing = butecoStore.getState().publishing;
+    butecoUnsubscribe = butecoStore.subscribe(state => {
+        if (state.publishing === wasPublishing) return;
+        wasPublishing = state.publishing;
+        rebuildTrayMenu(win);
+    });
 }

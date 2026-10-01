@@ -274,10 +274,18 @@ if (isLinux) {
 // One long-lived subscription: mirror the token-redacted session carried on
 // every Buteco envelope (so the controller's `getSession()` has the ice servers
 // / limits at start) and tear the active controller down on terminal events.
+// A `control: "stop"` envelope (sent by main when the tray stop item is used)
+// tears the controller down even though no terminal event was dispatched.
 onceReady.then(() => {
     VesktopNative.buteco.onEvent(envelope => {
-        const { state, event } = envelope as ButecoEventEnvelope;
+        const { state, event, control } = envelope as ButecoEventEnvelope;
         latestButecoSession = state.session;
+
+        if (control === "stop") {
+            setLatestButecoError(null);
+            void stopActiveButeco();
+            return;
+        }
 
         const type = event?.type;
         if (type === "revoked" || type === "stop_requested" || type === "screen_lost") {

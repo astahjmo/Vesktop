@@ -12,7 +12,14 @@ import { handle } from "../utils/ipcWrappers";
 import { armCapture, cancelCapture } from "./capture";
 import { exchangeCode, tokenVault } from "./pairing";
 import { connectHelper, type HelperConnection } from "./socket";
-import { butecoStore, type ButecoWireSession, redactSession, toWireEvent, toWireState } from "./store";
+import {
+    type ButecoEventEnvelope,
+    butecoStore,
+    type ButecoWireSession,
+    redactSession,
+    toWireEvent,
+    toWireState
+} from "./store";
 import { publishScreen, refreshIce, unpair, unpublishScreen } from "./whip";
 
 let helper: HelperConnection | null = null;
@@ -22,12 +29,14 @@ let helper: HelperConnection | null = null;
  * token via `toWireState`. When an event has just been forwarded it rides along
  * in the envelope, redacted through `toWireEvent` (a `session` event's token is
  * stripped by the same rule), so the renderer can react to
- * revoked/stop_requested/screen_lost.
+ * revoked/stop_requested/screen_lost. `control: "stop"` additionally asks the
+ * renderer to tear down the active Buteco capture.
  */
-function broadcast(event?: ButecoEvent) {
-    const envelope = {
+function broadcast(event?: ButecoEvent, control?: "stop") {
+    const envelope: ButecoEventEnvelope = {
         state: toWireState(butecoStore.getState()),
-        event: event === undefined ? undefined : toWireEvent(event)
+        event: event === undefined ? undefined : toWireEvent(event),
+        ...(control === undefined ? {} : { control })
     };
     for (const wc of webContents.getAllWebContents()) {
         wc.send(IpcEvents.BUTECO_EVENT, envelope);
@@ -51,6 +60,23 @@ function connectSocket() {
             broadcast(event);
         }
     });
+}
+
+/**
+ * Ends the active Buteco stream from the main process. Best-effort: it asks the
+ * Ground to delete the screen resource (so the stream ends even if the renderer
+ * is unresponsive) and always asks the renderer to tear down its local capture
+ * via `control: "stop"` on `BUTECO_EVENT`. No-op when nothing is publishing.
+ */
+export async function stopButecoPublish(): Promise<void> {
+    if (!butecoStore.getState().publishing) return;
+
+    const token = tokenVault.getToken();
+    if (token) await unpublishScreen({ token }).catch(() => {});
+
+    butecoStore.setPublishing(false);
+    butecoStore.setPhase("idle");
+    broadcast(undefined, "stop");
 }
 
 export function registerButeco() {

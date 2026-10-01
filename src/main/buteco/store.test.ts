@@ -47,6 +47,41 @@ describe("butecoStore", () => {
     });
 });
 
+describe("butecoStore.subscribe", () => {
+    it("notifies subscribers with the new snapshot after mutations", () => {
+        const store = createButecoStore();
+        const cb = vi.fn();
+        store.subscribe(cb);
+
+        store.setPublishing(true);
+        expect(cb).toHaveBeenLastCalledWith({ phase: "idle", session: null, publishing: true });
+
+        store.setPhase("live");
+        expect(cb).toHaveBeenLastCalledWith({ phase: "live", session: null, publishing: true });
+
+        store.clear();
+        expect(cb).toHaveBeenLastCalledWith({ phase: "idle", session: null, publishing: false });
+        expect(cb).toHaveBeenCalledTimes(3);
+    });
+
+    it("stops notifying after unsubscribe", () => {
+        const store = createButecoStore();
+        const cb = vi.fn();
+        const off = store.subscribe(cb);
+        off();
+        store.setPublishing(true);
+        expect(cb).not.toHaveBeenCalled();
+    });
+
+    it("does not notify event subscribers of state mutations", () => {
+        const store = createButecoStore();
+        const cb = vi.fn();
+        store.onEvent(cb);
+        store.setPublishing(true);
+        expect(cb).not.toHaveBeenCalled();
+    });
+});
+
 describe("redactSession", () => {
     it("strips the bearer token but keeps everything else", () => {
         const wire = redactSession(session);
