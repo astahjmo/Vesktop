@@ -54,6 +54,8 @@ export interface Settings {
         onlySpeakers?: boolean;
         onlyDefaultSpeakers?: boolean;
     };
+
+    butecoMode?: "native" | "buteco";
 }
 
 export interface State {

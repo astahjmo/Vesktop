@@ -17,6 +17,37 @@
 }
 
 
+/* Mode Toggle */
+.vcd-screen-picker-mode-toggle {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    width: 100%;
+    margin-bottom: 1em;
+    border-radius: 3px;
+}
+
+.vcd-screen-picker-mode-option {
+    text-align: center;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--primary-800);
+    color: var(--text-normal);
+    padding: 0.5em;
+    cursor: pointer;
+}
+
+.vcd-screen-picker-mode-option:first-child {
+    border-radius: 3px 0 0 3px;
+}
+
+.vcd-screen-picker-mode-option:last-child {
+    border-radius: 0 3px 3px 0;
+}
+
+.vcd-screen-picker-mode-option[data-selected="true"] {
+    background-color: var(--brand-500);
+    border-color: var(--brand-500);
+}
+
 /* Screen Grid */
 .vcd-screen-picker-screen-grid {
     display: grid;

@@ -33,6 +33,7 @@ import {
 } from "@vencord/types/webpack/common";
 import { Node } from "@vencord/venmic";
 import type { Dispatch, SetStateAction } from "react";
+import { ButecoPanel } from "renderer/buteco/ButecoPanel";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
@@ -67,6 +68,16 @@ interface StreamSettings {
 export interface StreamPick extends StreamSettings {
     id: string;
     mode?: "native" | "buteco";
+}
+
+export interface ButecoPick {
+    sourceId: string;
+    videoKind: "screen" | "window";
+    videoLabel: string;
+    height: 720 | 1080 | 1440;
+    fps: 30 | 60;
+    mic: boolean;
+    includeSources?: AudioSources;
 }
 
 interface Source {
@@ -706,12 +717,16 @@ function ModalComponent({
     close: () => void;
     skipPicker: boolean;
 }) {
+    const Settings = useSettings();
+    const mode = Settings.butecoMode ?? "native";
+
     const [selected, setSelected] = useState<string | undefined>(skipPicker ? screens[0].id : void 0);
     const [settings, setSettings] = useState<StreamSettings>({
         contentHint: "motion",
         audio: true,
         includeSources: "None"
     });
+    const [butecoPick, setButecoPick] = useState<ButecoPick | null>(null);
     const qualitySettings = (useVesktopState().screenshareQuality ??= {
         resolution: "720",
         frameRate: "30"
@@ -724,15 +739,17 @@ function ModalComponent({
             const height = Number(qualitySettings.resolution);
             const width = Math.round(height * (16 / 9));
 
-            const conn = [...MediaEngineStore.getMediaEngine().connections].find(
-                connection => connection.streamUserId === UserStore.getCurrentUser().id
-            );
+            if (mode !== "buteco") {
+                const conn = [...MediaEngineStore.getMediaEngine().connections].find(
+                    connection => connection.streamUserId === UserStore.getCurrentUser().id
+                );
 
-            if (conn) {
-                conn.videoStreamParameters[0].maxFrameRate = frameRate;
-                conn.videoStreamParameters[0].maxResolution ??= { width: 0, height: 0 };
-                conn.videoStreamParameters[0].maxResolution.height = height;
-                conn.videoStreamParameters[0].maxResolution.width = width;
+                if (conn) {
+                    conn.videoStreamParameters[0].maxFrameRate = frameRate;
+                    conn.videoStreamParameters[0].maxResolution ??= { width: 0, height: 0 };
+                    conn.videoStreamParameters[0].maxResolution.height = height;
+                    conn.videoStreamParameters[0].maxResolution.width = width;
+                }
             }
 
             submit({
@@ -741,6 +758,8 @@ function ModalComponent({
             });
 
             setTimeout(async () => {
+                if (mode === "buteco") return;
+
                 const conn = [...MediaEngineStore.getMediaEngine().connections].find(
                     connection => connection.streamUserId === UserStore.getCurrentUser().id
                 );
@@ -787,12 +806,40 @@ function ModalComponent({
                 },
                 {
                     text: "Go Live",
-                    disabled: !selected,
+                    // In Buteco mode the panel owns its own Iniciar action.
+                    disabled: mode === "buteco" || !selected,
                     onClick: handleGoLive
                 }
             ]}
         >
-            {!selected ? (
+            <div className={cl("mode-toggle")}>
+                {(["native", "buteco"] as const).map(m => (
+                    <button
+                        key={m}
+                        className={cl("mode-option")}
+                        data-selected={mode === m}
+                        onClick={() => (Settings.butecoMode = m)}
+                    >
+                        {m === "native" ? "Native" : "Buteco Games"}
+                    </button>
+                ))}
+            </div>
+
+            {mode === "buteco" ? (
+                <ButecoPanel
+                    pick={butecoPick}
+                    onPick={setButecoPick}
+                    onStart={() => {
+                        submit({
+                            id: "",
+                            mode: "buteco",
+                            contentHint: settings.contentHint,
+                            audio: settings.audio
+                        } as StreamPick);
+                        close();
+                    }}
+                />
+            ) : !selected ? (
                 <ScreenPicker screens={screens} chooseScreen={setSelected} />
             ) : (
                 <StreamSettingsUi
