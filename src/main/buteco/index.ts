@@ -12,7 +12,7 @@ import { handle } from "../utils/ipcWrappers";
 import { armCapture, cancelCapture } from "./capture";
 import { exchangeCode, tokenVault } from "./pairing";
 import { connectHelper, type HelperConnection } from "./socket";
-import { butecoStore, toWireState } from "./store";
+import { butecoStore, toWireEvent, toWireState } from "./store";
 import { publishScreen, refreshIce, unpair, unpublishScreen } from "./whip";
 
 let helper: HelperConnection | null = null;
@@ -20,10 +20,15 @@ let helper: HelperConnection | null = null;
 /**
  * Pushes the current store snapshot to every webContents, redacting the bearer
  * token via `toWireState`. When an event has just been forwarded it rides along
- * in the envelope so the renderer can react to revoked/stop_requested/screen_lost.
+ * in the envelope, redacted through `toWireEvent` (a `session` event's token is
+ * stripped by the same rule), so the renderer can react to
+ * revoked/stop_requested/screen_lost.
  */
 function broadcast(event?: ButecoEvent) {
-    const envelope = { state: toWireState(butecoStore.getState()), event };
+    const envelope = {
+        state: toWireState(butecoStore.getState()),
+        event: event === undefined ? undefined : toWireEvent(event)
+    };
     for (const wc of webContents.getAllWebContents()) {
         wc.send(IpcEvents.BUTECO_EVENT, envelope);
     }

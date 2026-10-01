@@ -30,17 +30,32 @@ export interface ButecoWireState extends Omit<ButecoState, "session"> {
     session: ButecoWireSession | null;
 }
 
+/** Event as seen by the renderer: a `session` event has its token stripped. */
+export type ButecoWireEvent =
+    Exclude<ButecoEvent, { type: "session" }> | { type: "session"; session: ButecoWireSession };
+
 /** Envelope pushed on `BUTECO_EVENT`: the snapshot plus any event just forwarded. */
 export interface ButecoEventEnvelope {
     state: ButecoWireState;
-    event: ButecoEvent | undefined;
+    event: ButecoWireEvent | undefined;
+}
+
+/** The single redaction rule: strips the bearer token from a session. */
+export function redactSession(session: ButecoSession): ButecoWireSession {
+    const { token, ...rest } = session;
+    return rest;
 }
 
 /** Strips the bearer token from a store snapshot so it never reaches the renderer. */
 export function toWireState(state: ButecoState): ButecoWireState {
     if (!state.session) return { ...state, session: null };
-    const { token, ...session } = state.session;
-    return { ...state, session };
+    return { ...state, session: redactSession(state.session) };
+}
+
+/** Strips the bearer token from an event's session before it reaches the renderer. */
+export function toWireEvent(event: ButecoEvent): ButecoWireEvent {
+    if (event.type === "session") return { type: "session", session: redactSession(event.session) };
+    return event;
 }
 
 export function createButecoStore(): ButecoStore {

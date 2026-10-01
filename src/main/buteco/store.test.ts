@@ -7,7 +7,7 @@
 import type { ButecoSession } from "shared/buteco";
 import { describe, expect, it, vi } from "vitest";
 
-import { createButecoStore, toWireState } from "./store";
+import { createButecoStore, toWireEvent, toWireState } from "./store";
 
 const session: ButecoSession = {
     token: "super-secret-token",
@@ -63,5 +63,28 @@ describe("toWireState", () => {
         const wire = toWireState({ phase: "idle", session: null, publishing: false });
         expect(wire.session).toBeNull();
         expect(wire.phase).toBe("idle");
+    });
+});
+
+describe("toWireEvent", () => {
+    it("strips the bearer token from a session event", () => {
+        const wire = toWireEvent({ type: "session", session });
+        expect(wire.type).toBe("session");
+        if (wire.type !== "session") throw new Error("expected session event");
+        expect(wire.session).not.toHaveProperty("token");
+        expect(wire.session.user.displayName).toBe("Dev");
+        expect(wire.session.room.slug).toBe("sala");
+        expect(wire.session.iceServers).toHaveLength(1);
+    });
+
+    it("passes non-session events through unchanged", () => {
+        expect(toWireEvent({ type: "revoked", reason: "user_revoked" })).toEqual({
+            type: "revoked",
+            reason: "user_revoked"
+        });
+        expect(toWireEvent({ type: "connection", state: "reconnecting" })).toEqual({
+            type: "connection",
+            state: "reconnecting"
+        });
     });
 });
