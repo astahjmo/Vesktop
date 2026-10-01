@@ -4,16 +4,18 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Button, HeadingTertiary, Paragraph } from "@vencord/types/components";
+import { Button, Heading, HeadingTertiary, Paragraph } from "@vencord/types/components";
 import { useAwaiter, useForceUpdater } from "@vencord/types/utils";
 import { useState } from "@vencord/types/webpack/common";
 import type { Node } from "@vencord/venmic";
+import type { ButecoWireSession } from "main/buteco/store";
 import type { ButecoPick } from "renderer/components/ScreenSharePicker";
 import { useSettings } from "renderer/settings";
 import { isLinux } from "renderer/utils";
 import type { ButecoError, ButecoSource } from "shared/buteco";
 
 import { BUTECO_ERROR_MESSAGES, isRepairErrorCode } from "./messages";
+import { BUTECO_FPS, BUTECO_HEIGHTS, clampFps, clampHeight } from "./quality";
 
 type VirtmicList = Awaited<ReturnType<typeof VesktopNative.virtmic.list>>;
 
@@ -123,7 +125,8 @@ export function ButecoPanel({
     paired,
     onPair,
     error,
-    needsRepair
+    needsRepair,
+    session
 }: {
     pick: ButecoPick | null;
     onPick: (p: ButecoPick) => void;
@@ -138,6 +141,8 @@ export function ButecoPanel({
      * re-pairing keeps the pairing input on screen.
      */
     needsRepair: boolean;
+    /** Latest token-redacted session, source of the quality limits. */
+    session: ButecoWireSession | null;
 }) {
     const [sources] = useAwaiter<ButecoSource[]>(() => VesktopNative.buteco.listSources(), {
         fallbackValue: [],
@@ -179,8 +184,8 @@ export function ButecoPanel({
                                 sourceId: s.id,
                                 videoKind: s.kind,
                                 videoLabel: s.name,
-                                height: pick?.height ?? 1080,
-                                fps: pick?.fps ?? 30,
+                                height: clampHeight(pick?.height, session?.limits.maxHeight),
+                                fps: clampFps(pick?.fps, session?.limits.maxFps),
                                 mic: pick?.mic ?? true,
                                 // Preserve a previously chosen audio selection when
                                 // the user switches source.
@@ -194,10 +199,80 @@ export function ButecoPanel({
                     </button>
                 ))}
             </div>
+            {pick ? <ButecoQualityControls pick={pick} onPick={onPick} session={session} /> : null}
             {pick ? <ButecoAudioPicker pick={pick} onPick={onPick} /> : null}
             <Button disabled={!pick} onClick={onStart}>
                 Iniciar
             </Button>
+        </div>
+    );
+}
+
+/**
+ * Resolution / frame-rate / microphone controls for the Buteco path. Every
+ * value written to the pick is clamped to `session.limits` (and to the values
+ * the strict publish schema accepts) before it can reach `ButecoPublishMeta`.
+ */
+function ButecoQualityControls({
+    pick,
+    onPick,
+    session
+}: {
+    pick: ButecoPick;
+    onPick: (p: ButecoPick) => void;
+    session: ButecoWireSession | null;
+}) {
+    const limits = session?.limits;
+    const height = clampHeight(pick.height, limits?.maxHeight);
+    const fps = clampFps(pick.fps, limits?.maxFps);
+    const heights = BUTECO_HEIGHTS.filter(h => h <= (limits?.maxHeight ?? BUTECO_HEIGHTS[BUTECO_HEIGHTS.length - 1]));
+    const fpsOptions = BUTECO_FPS.filter(f => f <= (limits?.maxFps ?? BUTECO_FPS[BUTECO_FPS.length - 1]));
+
+    return (
+        <div>
+            <HeadingTertiary>Qualidade</HeadingTertiary>
+            <section>
+                <Heading tag="h5">Resolução</Heading>
+                <div>
+                    {(heights.length ? heights : [BUTECO_HEIGHTS[0]]).map(option => (
+                        <label key={option} data-checked={height === option}>
+                            <input
+                                type="radio"
+                                name="buteco-height"
+                                value={option}
+                                checked={height === option}
+                                onChange={() => onPick({ ...pick, height: option })}
+                            />
+                            {option}p
+                        </label>
+                    ))}
+                </div>
+            </section>
+            <section>
+                <Heading tag="h5">Taxa de quadros</Heading>
+                <div>
+                    {(fpsOptions.length ? fpsOptions : [BUTECO_FPS[0]]).map(option => (
+                        <label key={option} data-checked={fps === option}>
+                            <input
+                                type="radio"
+                                name="buteco-fps"
+                                value={option}
+                                checked={fps === option}
+                                onChange={() => onPick({ ...pick, fps: option })}
+                            />
+                            {option} fps
+                        </label>
+                    ))}
+                </div>
+            </section>
+            <label>
+                <input
+                    type="checkbox"
+                    checked={pick.mic}
+                    onChange={e => onPick({ ...pick, mic: e.currentTarget.checked })}
+                />
+                Microfone
+            </label>
         </div>
     );
 }
