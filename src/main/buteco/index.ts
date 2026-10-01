@@ -9,9 +9,11 @@ import type { ButecoEvent, ButecoPhase, ButecoPublishMeta, ButecoResult, ButecoS
 import { IpcEvents } from "shared/IpcEvents";
 
 import { handle } from "../utils/ipcWrappers";
+import { isWayland } from "../utils/isWayland";
 import { armCapture, cancelCapture } from "./capture";
 import { exchangeCode, tokenVault } from "./pairing";
 import { connectHelper, type HelperConnection, safeSendStatus } from "./socket";
+import { cacheSources, WAYLAND_PLACEHOLDER_ID, WAYLAND_SOURCE_LABEL } from "./sources";
 import { createButecoStopper } from "./stop";
 import {
     type ButecoEventEnvelope,
@@ -151,10 +153,19 @@ export function registerButeco() {
     handle(IpcEvents.BUTECO_CANCEL_CAPTURE, () => cancelCapture());
 
     handle(IpcEvents.BUTECO_LIST_SOURCES, async (): Promise<ButecoSource[]> => {
+        // On Wayland the portal picker happens when the capture starts, so
+        // enumerating sources here would only add an extra chooser dialog.
+        if (isWayland) {
+            return [{ id: WAYLAND_PLACEHOLDER_ID, name: WAYLAND_SOURCE_LABEL, kind: "screen" }];
+        }
+
         const sources = await desktopCapturer.getSources({
             types: ["screen", "window"],
             thumbnailSize: { width: 320, height: 180 }
         });
+        // Keep the enumeration for the armed capture handler so it does not
+        // have to call getSources again (see sources.ts).
+        cacheSources(sources);
         return sources.map(s => ({
             id: s.id,
             name: s.name,
