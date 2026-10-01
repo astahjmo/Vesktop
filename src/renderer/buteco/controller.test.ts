@@ -6,10 +6,21 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { createButecoController } from "./controller";
+import { createButecoController, reorderVideoCodecs } from "./controller";
 
 function fakeTrack(kind: "video" | "audio", id: string) {
-    return { id, kind, contentHint: "", stop: vi.fn(), addEventListener: vi.fn() };
+    const listeners = new Map<string, Function>();
+    return {
+        id,
+        kind,
+        contentHint: "",
+        stop: vi.fn(),
+        addEventListener: vi.fn((ev: string, cb: Function) => {
+            listeners.set(ev, cb);
+        }),
+        /** Test helper: dispatch a captured event (e.g. "ended"). */
+        fire: (ev: string) => listeners.get(ev)?.()
+    };
 }
 
 function fakeStream(id: string) {
@@ -34,7 +45,7 @@ function fakePC() {
         localDescription: { sdp: "v=0 offer" },
         addTransceiver: vi.fn((track: any, init: any) => {
             const sender = { setCodecPreferences: vi.fn() };
-            pc.addedTransceivers.push({ track, init });
+            pc.addedTransceivers.push({ track, init, sender });
             return { sender };
         }),
         createOffer: vi.fn(async () => ({ type: "offer", sdp: "v=0 offer" })),
@@ -238,5 +249,147 @@ describe("ButecoController", () => {
         expect(stream.getTracks()[0].stop).toHaveBeenCalled();
         expect(pc.close).toHaveBeenCalled();
         expect(unpublish).toHaveBeenCalled();
+    });
+
+    it("unmutes the virtmic after starting app audio", async () => {
+        const pc = fakePC();
+        const virtmic = {
+            start: vi.fn(async (_nodes: unknown[]) => {}),
+            stop: vi.fn(async () => {}),
+            unmute: vi.fn(async () => {})
+        };
+        const c = createButecoController({
+            getSession: () => session,
+            getDisplayMedia: async () => fakeStream("vid1"),
+            getUserMedia: async () => fakeStream("aud1"),
+            createPeerConnection: () => pc,
+            publish: fakePublish(),
+            unpublish: async () => ({ ok: true as const, value: undefined }),
+            virtmic
+        });
+
+        await c.start({ ...baseOpts, mic: false, includeAudioNodes: [{ id: "node-1" }] });
+
+        expect(virtmic.start).toHaveBeenCalledTimes(1);
+        expect(virtmic.unmute).toHaveBeenCalledTimes(1);
+        // Unmute must land after the link is created, or it is a no-op.
+        expect(virtmic.unmute.mock.invocationCallOrder[0]).toBeGreaterThan(virtmic.start.mock.invocationCallOrder[0]);
+    });
+
+    it("does not touch the virtmic when app audio is not enabled", async () => {
+        const pc = fakePC();
+        const virtmic = {
+            start: vi.fn(async (_nodes: unknown[]) => {}),
+            stop: vi.fn(async () => {}),
+            unmute: vi.fn(async () => {})
+        };
+        const c = createButecoController({
+            getSession: () => session,
+            getDisplayMedia: async () => fakeStream("vid1"),
+            getUserMedia: async () => fakeStream("aud1"),
+            createPeerConnection: () => pc,
+            publish: fakePublish(),
+            unpublish: async () => ({ ok: true as const, value: undefined }),
+            virtmic
+        });
+
+        await c.start({ ...baseOpts, mic: true, includeAudioNodes: [] });
+
+        expect(virtmic.start).not.toHaveBeenCalled();
+        expect(virtmic.unmute).not.toHaveBeenCalled();
+    });
+
+    it("tears down and unpublishes when the video track ends", async () => {
+        const pc = fakePC();
+        const unpublish = vi.fn(async () => ({ ok: true as const, value: undefined }));
+        const display = fakeStream("vid1");
+        const c = createButecoController({
+            getSession: () => session,
+            getDisplayMedia: async () => display,
+            getUserMedia: async () => fakeStream("aud1"),
+            createPeerConnection: () => pc,
+            publish: fakePublish(),
+            unpublish
+        });
+
+        await c.start({ ...baseOpts, mic: false });
+        expect(unpublish).not.toHaveBeenCalled();
+
+        // Simulate the OS/Chromium "Stop sharing" gesture.
+        display.tracks[0].fire("ended");
+        await vi.waitFor(() => expect(unpublish).toHaveBeenCalledTimes(1));
+
+        expect(display.tracks[0].stop).toHaveBeenCalled();
+        expect(pc.close).toHaveBeenCalled();
+        expect(c.getConnection()).toBeNull();
+    });
+
+    it("offers the full codec list (recovery codecs included) to setCodecPreferences", async () => {
+        const codecs = [
+            { mimeType: "video/VP9" },
+            { mimeType: "video/rtx", sdpFmtpLine: "apt=96" },
+            { mimeType: "video/VP8" },
+            { mimeType: "video/H264" }
+        ];
+        const original = (globalThis as any).RTCRtpSender;
+        (globalThis as any).RTCRtpSender = { getCapabilities: () => ({ codecs }) };
+
+        try {
+            const pc = fakePC();
+            const c = createButecoController({
+                getSession: () => session,
+                getDisplayMedia: async () => fakeStream("vid1"),
+                getUserMedia: async () => fakeStream("aud1"),
+                createPeerConnection: () => pc,
+                publish: fakePublish(),
+                unpublish: async () => ({ ok: true as const, value: undefined })
+            });
+
+            await c.start({ ...baseOpts, mic: false });
+
+            const setPrefs = pc.addedTransceivers[0].sender.setCodecPreferences;
+            expect(setPrefs).toHaveBeenCalledTimes(1);
+            const selected = setPrefs.mock.calls[0][0];
+            // The regressed filter dropped rtx; the reorder must retain it.
+            expect(selected.map((x: { mimeType: string }) => x.mimeType)).toEqual([
+                "video/VP8",
+                "video/H264",
+                "video/rtx",
+                "video/VP9"
+            ]);
+        } finally {
+            if (original === undefined) delete (globalThis as any).RTCRtpSender;
+            else (globalThis as any).RTCRtpSender = original;
+        }
+    });
+});
+
+describe("reorderVideoCodecs", () => {
+    it("keeps every codec, moving H264/VP8 and recovery codecs to the front", () => {
+        const codecs = [
+            { mimeType: "video/VP9" },
+            { mimeType: "video/ulpfec" },
+            { mimeType: "video/VP8" },
+            { mimeType: "video/rtx", sdpFmtpLine: "apt=96" },
+            { mimeType: "video/AV1" },
+            { mimeType: "video/H264" }
+        ];
+
+        const result = reorderVideoCodecs(codecs);
+        const mimes = result.map(c => c.mimeType);
+
+        // Nothing is dropped: retransmission/recovery survives.
+        expect(result).toHaveLength(codecs.length);
+        expect(new Set(mimes)).toEqual(new Set(codecs.map(c => c.mimeType)));
+        // H264/VP8 lead, with rtx/ulpfec right behind them.
+        expect(mimes.slice(0, 3)).toEqual(["video/VP8", "video/H264", "video/ulpfec"]);
+        expect(mimes).toContain("video/rtx");
+        // Non-preferred codecs keep their relative order at the tail.
+        expect(mimes.slice(-2)).toEqual(["video/VP9", "video/AV1"]);
+    });
+
+    it("leaves the list untouched when no preferred codec is present", () => {
+        const codecs = [{ mimeType: "video/VP9" }, { mimeType: "video/rtx", sdpFmtpLine: "apt=98" }];
+        expect(reorderVideoCodecs(codecs)).toEqual(codecs);
     });
 });

@@ -37,6 +37,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { ButecoPanel } from "renderer/buteco/ButecoPanel";
 import { type ButecoController, createButecoController, type StartOptions } from "renderer/buteco/controller";
 import { isRepairErrorCode } from "renderer/buteco/messages";
+import { clampQuality } from "renderer/buteco/quality";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
@@ -81,6 +82,8 @@ export interface ButecoPick {
     height: 720 | 1080 | 1440;
     fps: 30 | 60;
     mic: boolean;
+    /** Track content hint; the picker's selection is honored for the Buteco path. */
+    contentHint?: string;
     includeSources?: AudioSources;
     /** Partial venmic node selectors for app/system audio (Buteco path only). */
     includeAudioNodes?: Node[];
@@ -209,19 +212,28 @@ export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult
             getVirtmicDeviceId: findVirtmicDeviceId,
             virtmic: {
                 start: nodes => VesktopNative.virtmic.start(nodes as Node[]),
-                stop: () => VesktopNative.virtmic.stop()
+                stop: () => VesktopNative.virtmic.stop(),
+                // venmic links muted by default and nothing in Buteco mode would
+                // otherwise unmute it (the native STREAM_UPDATE flow is bypassed).
+                unmute: () => VesktopNative.virtmic.unmute()
             }
         });
 
         activeButecoController = controller;
 
+        // The panel already clamps while editing, but re-clamp here so a stale
+        // pick or a changed `maxHeight`/`maxFps` can never reach the strict
+        // `ButecoPublishMeta` schema with an out-of-range value.
+        const quality = clampQuality(pick, latestButecoSession?.limits);
+
         const res = await controller.start({
             sourceId: pick.sourceId,
             videoKind: pick.videoKind,
             videoLabel: pick.videoLabel,
-            height: pick.height,
-            fps: pick.fps,
+            height: quality.height,
+            fps: quality.fps,
             mic: pick.mic,
+            contentHint: pick.contentHint ?? "motion",
             includeAudioNodes: pick.includeAudioNodes ?? [],
             audioLabel: pick.audioLabel ?? null
         } satisfies StartOptions);
@@ -1015,6 +1027,7 @@ function ModalComponent({
                     onPair={handlePair}
                     error={butecoError}
                     needsRepair={needsRepair}
+                    session={latestButecoSession}
                     onStart={() => {
                         if (!butecoPick) return;
                         submit({
