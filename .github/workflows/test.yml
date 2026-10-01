@@ -26,6 +26,9 @@ jobs:
             - name: Run tests
               run: pnpm test
 
+            - name: Run unit tests
+              run: pnpm test:unit
+
             - name: Test if it compiles
               run: |
                   pnpm build
