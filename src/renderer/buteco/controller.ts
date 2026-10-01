@@ -85,8 +85,10 @@ export function createButecoController(deps: ControllerDeps): ButecoController {
                 const mic = await deps.getUserMedia({ audio: true, video: false });
                 streams.push(mic);
                 const micTrack = mic.getAudioTracks()[0];
-                if (micTrack) pc.addTransceiver(micTrack, { direction: "sendonly", streams: [mic] });
-                micEnabled = true;
+                if (micTrack) {
+                    pc.addTransceiver(micTrack, { direction: "sendonly", streams: [mic] });
+                    micEnabled = true;
+                }
             }
 
             if (audioAllowed && opts.includeAudioNodes?.length && deps.virtmic) {
@@ -104,8 +106,10 @@ export function createButecoController(deps: ControllerDeps): ButecoController {
                 });
                 streams.push(appAudio);
                 const appTrack = appAudio.getAudioTracks()[0];
-                if (appTrack) pc.addTransceiver(appTrack, { direction: "sendonly", streams: [appAudio] });
-                audioLabel = opts.audioLabel ?? VIRT_MIC_LABEL;
+                if (appTrack) {
+                    pc.addTransceiver(appTrack, { direction: "sendonly", streams: [appAudio] });
+                    audioLabel = opts.audioLabel ?? VIRT_MIC_LABEL;
+                }
             }
 
             const offer = await pc.createOffer();
