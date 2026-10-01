@@ -37,6 +37,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { ButecoPanel } from "renderer/buteco/ButecoPanel";
 import { type ButecoController, createButecoController, type StartOptions } from "renderer/buteco/controller";
 import { isRepairErrorCode } from "renderer/buteco/messages";
+import { setButecoPublishing } from "renderer/buteco/publishState";
 import { clampQuality } from "renderer/buteco/quality";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
@@ -157,6 +158,29 @@ export function getLatestButecoSession(): ButecoWireSession | null {
     return latestButecoSession;
 }
 
+export function setLatestButecoSession(session: ButecoWireSession | null): void {
+    latestButecoSession = session;
+}
+
+/**
+ * Pairs with the Buteco Ground and, on success, stores the token-redacted
+ * session at module scope so `startButecoPublish` can read its ice servers and
+ * limits. Shared by the in-picker panel and the standalone call-tray modal so
+ * the pairing contract lives in one place.
+ */
+export async function pairButeco(code: string): Promise<{ ok: true } | { ok: false; error: ButecoError }> {
+    try {
+        const res = (await VesktopNative.buteco.pair(code)) as ButecoResult<ButecoWireSession>;
+        if (!res.ok) return { ok: false, error: res.error };
+
+        latestButecoSession = res.value;
+        setLatestButecoError(null);
+        return { ok: true };
+    } catch {
+        return { ok: false, error: { code: "network", message: "Falha ao parear." } };
+    }
+}
+
 /**
  * Last Buteco error seen after the picker closed, so reopening it surfaces the
  * failure instead of silently looking paired. The wire protocol carries no error
@@ -177,6 +201,7 @@ export async function stopActiveButeco(): Promise<void> {
     const controller = activeButecoController;
     activeButecoController = null;
     if (controller) await controller.stop().catch(() => {});
+    setButecoPublishing(false);
 }
 
 async function findVirtmicDeviceId(): Promise<string | null> {
@@ -249,6 +274,7 @@ export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult
         }
 
         setLatestButecoError(null);
+        setButecoPublishing(true);
         return { ok: true, value: undefined };
     } catch {
         await stopActiveButeco();
