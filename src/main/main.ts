@@ -12,6 +12,7 @@ import "./vesktopProtocol";
 
 import { app, BrowserWindow, nativeTheme } from "electron";
 
+import { registerButeco } from "./buteco";
 import { DATA_DIR } from "./constants";
 import { createFirstLaunchTour } from "./firstLaunch";
 import { createWindows, mainWin } from "./mainWindow";
@@ -104,6 +105,7 @@ function init() {
         if (process.platform === "win32") app.setAppUserModelId("dev.vencord.vesktop");
 
         registerScreenShareHandler();
+        registerButeco();
         registerMediaPermissionsHandler();
 
         bootstrap();

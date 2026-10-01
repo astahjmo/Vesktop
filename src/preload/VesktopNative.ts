@@ -84,6 +84,19 @@ export const VesktopNative = {
     capturer: {
         getLargeThumbnail: (id: string) => invoke<string>(IpcEvents.CAPTURER_GET_LARGE_THUMBNAIL, id)
     },
+    buteco: {
+        pair: (code: string) => invoke(IpcEvents.BUTECO_PAIR, code),
+        unpair: () => invoke(IpcEvents.BUTECO_UNPAIR),
+        armCapture: (sourceId: string) => invoke(IpcEvents.BUTECO_ARM_CAPTURE, sourceId),
+        cancelCapture: () => invoke(IpcEvents.BUTECO_CANCEL_CAPTURE),
+        listSources: () => invoke(IpcEvents.BUTECO_LIST_SOURCES),
+        publish: (offerSdp: string, meta: unknown) => invoke(IpcEvents.BUTECO_PUBLISH, offerSdp, meta),
+        unpublish: () => invoke(IpcEvents.BUTECO_UNPUBLISH),
+        refreshIce: () => invoke(IpcEvents.BUTECO_REFRESH_ICE),
+        onEvent: (cb: (state: unknown) => void) => {
+            ipcRenderer.on(IpcEvents.BUTECO_EVENT, (_e, state) => cb(state));
+        }
+    },
     /** only available on Linux. */
     virtmic: {
         list: () =>
