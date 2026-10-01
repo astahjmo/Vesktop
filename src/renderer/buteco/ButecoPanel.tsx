@@ -122,7 +122,8 @@ export function ButecoPanel({
     onStart,
     paired,
     onPair,
-    error
+    error,
+    needsRepair
 }: {
     pick: ButecoPick | null;
     onPick: (p: ButecoPick) => void;
@@ -131,6 +132,12 @@ export function ButecoPanel({
     onPair: (code: string) => Promise<boolean>;
     /** Latest Buteco failure to surface, mapped to a human-readable message. */
     error: ButecoError | null;
+    /**
+     * Sticky flag set on a stale session (token_invalid / client_outdated) and
+     * cleared only by a successful pair, so a transient non-repair failure while
+     * re-pairing keeps the pairing input on screen.
+     */
+    needsRepair: boolean;
 }) {
     const [sources] = useAwaiter<ButecoSource[]>(() => VesktopNative.buteco.listSources(), {
         fallbackValue: [],
@@ -139,7 +146,9 @@ export function ButecoPanel({
 
     // A stale session (token_invalid / client_outdated) can only be fixed by
     // pairing again, so drop straight back to the pairing screen and say so.
-    if (paired && error && isRepairErrorCode(error.code)) {
+    // `needsRepair` keeps it there across a failed re-pair attempt (the latest
+    // error may then be a transient `network`/`invalid_code_format`).
+    if (paired && (needsRepair || isRepairErrorCode(error?.code))) {
         return (
             <PairForm
                 onPair={onPair}

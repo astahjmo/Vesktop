@@ -36,6 +36,7 @@ import type { ButecoEventEnvelope, ButecoWireSession } from "main/buteco/store";
 import type { Dispatch, SetStateAction } from "react";
 import { ButecoPanel } from "renderer/buteco/ButecoPanel";
 import { type ButecoController, createButecoController, type StartOptions } from "renderer/buteco/controller";
+import { isRepairErrorCode } from "renderer/buteco/messages";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
@@ -870,16 +871,17 @@ function ModalComponent({
     const [butecoPick, setButecoPick] = useState<ButecoPick | null>(null);
     const [paired, setPaired] = useState(() => getLatestButecoSession() !== null);
     const [butecoError, setButecoError] = useState<ButecoError | null>(() => getLatestButecoError());
-    const qualitySettings = (useVesktopState().screenshareQuality ??= {
-        resolution: "720",
-        frameRate: "30"
-    });
+    // Sticky re-pair state: set by a stale session, cleared only by a successful
+    // pair, so a transient failure during re-pairing cannot drop the user back to
+    // the stale source list.
+    const [needsRepair, setNeedsRepair] = useState(() => isRepairErrorCode(getLatestButecoError()?.code));
 
     async function handlePair(code: string): Promise<boolean> {
         try {
             const res = (await VesktopNative.buteco.pair(code)) as ButecoResult<ButecoWireSession>;
             if (!res.ok) {
                 setButecoError(res.error);
+                if (isRepairErrorCode(res.error.code)) setNeedsRepair(true);
                 return false;
             }
 
@@ -887,12 +889,18 @@ function ModalComponent({
             setPaired(true);
             setButecoError(null);
             setLatestButecoError(null);
+            setNeedsRepair(false);
             return true;
         } catch {
             setButecoError({ code: "network", message: "Falha ao parear." });
             return false;
         }
     }
+
+    const qualitySettings = (useVesktopState().screenshareQuality ??= {
+        resolution: "720",
+        frameRate: "30"
+    });
 
     function handleGoLive() {
         currentSettings = settings;
@@ -998,6 +1006,7 @@ function ModalComponent({
                     paired={paired}
                     onPair={handlePair}
                     error={butecoError}
+                    needsRepair={needsRepair}
                     onStart={() => {
                         if (!butecoPick) return;
                         submit({

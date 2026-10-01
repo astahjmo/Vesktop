@@ -29,4 +29,8 @@ describe("isRepairErrorCode", () => {
         expect(isRepairErrorCode("screen_taken")).toBe(false);
         expect(isRepairErrorCode("network")).toBe(false);
     });
+
+    it("is false for an absent code", () => {
+        expect(isRepairErrorCode(undefined)).toBe(false);
+    });
 });

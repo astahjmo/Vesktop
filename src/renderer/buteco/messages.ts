@@ -29,8 +29,9 @@ export const BUTECO_ERROR_MESSAGES: Record<ButecoErrorCode, string> = {
 
 /**
  * Codes that mean the stored session can no longer be used and the user has to
- * pair again before anything else works.
+ * pair again before anything else works. Accepts `undefined` so callers can pass
+ * an optional error's code directly.
  */
-export function isRepairErrorCode(code: ButecoErrorCode): boolean {
+export function isRepairErrorCode(code: ButecoErrorCode | undefined): boolean {
     return code === "token_invalid" || code === "client_outdated";
 }
