@@ -41,7 +41,7 @@ import { clampQuality } from "renderer/buteco/quality";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
-import type { ButecoError, ButecoResult, ButecoSession } from "shared/buteco";
+import type { ButecoError, ButecoIceServer, ButecoResult, ButecoSession } from "shared/buteco";
 
 import { SimpleErrorBoundary } from "./SimpleErrorBoundary";
 
@@ -223,32 +223,39 @@ export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult
         await stopActiveButeco();
         await VesktopNative.buteco.armCapture(pick.sourceId);
 
+        const ice = (await VesktopNative.buteco.web.ice()) as ButecoResult<ButecoIceServer[]>;
+        if (!ice.ok) {
+            setLatestButecoError(ice.error);
+            await VesktopNative.buteco.cancelCapture();
+            return ice;
+        }
+
+        const webSession = {
+            iceServers: ice.value,
+            limits: { screenAudioAllowed: true, maxHeight: 1440, maxFps: 60, maxVideoKbps: 8000, audioKbps: 128 }
+        } as ButecoSession;
+
         const controller = createButecoController({
-            // The main process stores the full session; the renderer only ever
-            // sees the token-redacted wire copy, and the controller reads only
-            // iceServers and limits from it.
-            getSession: () => (latestButecoSession as ButecoSession | null) ?? null,
+            getSession: () => webSession,
             getDisplayMedia: opts => navigator.mediaDevices.getDisplayMedia(opts),
             getUserMedia: opts => navigator.mediaDevices.getUserMedia(opts),
             createPeerConnection: iceServers => new RTCPeerConnection({ iceServers, bundlePolicy: "max-bundle" }),
-            publish: (sdp, meta) => VesktopNative.buteco.publish(sdp, meta),
-            unpublish: () => VesktopNative.buteco.unpublish(),
+            publish: async sdp => {
+                const res = (await VesktopNative.buteco.web.publish(sdp)) as ButecoResult<{ sdp: string }>;
+                return res.ok ? { ok: true, value: { sdp: res.value.sdp, streamId: "" } } : res;
+            },
+            unpublish: () => VesktopNative.buteco.web.unpublish() as Promise<ButecoResult<void>>,
             getVirtmicDeviceId: findVirtmicDeviceId,
             virtmic: {
                 start: nodes => VesktopNative.virtmic.start(nodes as Node[]),
                 stop: () => VesktopNative.virtmic.stop(),
-                // venmic links muted by default and nothing in Buteco mode would
-                // otherwise unmute it (the native STREAM_UPDATE flow is bypassed).
                 unmute: () => VesktopNative.virtmic.unmute()
             }
         });
 
         activeButecoController = controller;
 
-        // The panel already clamps while editing, but re-clamp here so a stale
-        // pick or a changed `maxHeight`/`maxFps` can never reach the strict
-        // `ButecoPublishMeta` schema with an out-of-range value.
-        const quality = clampQuality(pick, latestButecoSession?.limits);
+        const quality = clampQuality(pick, undefined);
 
         const res = await controller.start({
             sourceId: pick.sourceId,
