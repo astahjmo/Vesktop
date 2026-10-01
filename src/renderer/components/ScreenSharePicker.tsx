@@ -81,6 +81,10 @@ export interface ButecoPick {
     fps: 30 | 60;
     mic: boolean;
     includeSources?: AudioSources;
+    /** Partial venmic node selectors for app/system audio (Buteco path only). */
+    includeAudioNodes?: Node[];
+    /** Human-readable label for the app-audio track published to the SFU. */
+    audioLabel?: string | null;
 }
 
 interface Source {
@@ -202,9 +206,8 @@ export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult
             height: pick.height,
             fps: pick.fps,
             mic: pick.mic,
-            // App-audio node selection is wired by a later task; `includeSources`
-            // carries it once the audio block lands.
-            includeAudioNodes: Array.isArray(pick.includeSources) ? pick.includeSources : []
+            includeAudioNodes: pick.includeAudioNodes ?? [],
+            audioLabel: pick.audioLabel ?? null
         } satisfies StartOptions);
 
         if (!res.ok) {
