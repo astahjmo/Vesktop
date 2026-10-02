@@ -68,6 +68,8 @@ let watchedUserId: string | null = null;
 /** Sala em que entramos sozinhos por causa de um Watch; saímos ao parar de assistir. */
 let autoJoinedRoomId: string | null = null;
 let lobbyRequested = false;
+/** Último tile selecionado que já tratamos (evita repetir o pedido a cada tick). */
+let lastAutoWatchId: string | null = null;
 
 let pc: RTCPeerConnection | null = null;
 let mediaStream: MediaStream | null = null;
@@ -632,8 +634,9 @@ function handleWatchClick(event: MouseEvent) {
     const button = target?.closest("button, [role=button]");
     const isWatchButton = Boolean(button && /watch/i.test(button.textContent || ""));
     const focused = tile.getBoundingClientRect().width > 600;
+    const watching = watchedUserId === source.discordUserId;
     // O tile do próprio usuário (avatar) tem o mesmo atributo; só o nosso tem Watch/stream.
-    if (!isWatchButton && !(focused && watchedUserId === source.discordUserId)) return;
+    if (!isWatchButton && !(focused && watching)) return;
     // Um botão que não é o Watch é do Discord (menu de opções etc.): não mexe.
     if (button && !isWatchButton) return;
 
@@ -644,12 +647,37 @@ function handleWatchClick(event: MouseEvent) {
     event.preventDefault();
     event.stopPropagation();
 
-    if (!focused) void requestWatch(source);
+    // O Discord pode já ter focado o tile sozinho (ex.: ao começar a transmitir): o
+    // clique no Watch tem de pedir o vídeo mesmo assim, e só minimiza quem já assiste.
+    if (!watching) void requestWatch(source);
     try {
-        actions.selectParticipant(channel.channelId, focused ? null : source.participant.id);
+        actions.selectParticipant(channel.channelId, focused && watching ? null : source.participant.id);
     } catch {
         // se a ação falhar, deixa o clique nativo seguir
     }
+}
+
+/**
+ * Se o Discord focou um dos nossos tiles por conta própria (ou por qualquer outro
+ * caminho que não o nosso clique), começa a assistir: o tile em foco sem vídeo
+ * ficaria eternamente no "Watch Stream".
+ */
+function autoWatchSelected() {
+    const channel = sources.size ? getVoiceChannel() : null;
+    const selectedId = channel
+        ? (findByProps("getStreamParticipants")?.getSelectedParticipantId?.(channel.channelId) ?? null)
+        : null;
+    const source = selectedId ? sourceByParticipantId(selectedId) : undefined;
+
+    if (!source) {
+        lastAutoWatchId = null;
+        return;
+    }
+    if (lastAutoWatchId === selectedId || watchedUserId === source.discordUserId) return;
+
+    lastAutoWatchId = selectedId;
+    note(`tile focado sem assistir: iniciando (${source.displayName})`);
+    void requestWatch(source);
 }
 
 /**
@@ -774,6 +802,7 @@ onceReady.then(() => {
     // O React remonta os tiles a cada mudança de layout; mantém o vídeo no
     // tile focado enquanto a conexão existir.
     const keepAlive = () => {
+        autoWatchSelected();
         const watched = watchedUserId ? sources.get(watchedUserId) : undefined;
         if (watched?.joined && !pc && !retryTimer && !starting && retryAttempts < MAX_RETRIES) {
             void startPlayback(watched.discordUserId);
