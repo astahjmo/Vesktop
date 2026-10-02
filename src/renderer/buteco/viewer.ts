@@ -52,6 +52,8 @@ interface Source {
     screenId: string | null;
     stream: any;
     participant: any;
+    /** Desde quando a tela não aparece nos retratos do site (tolerância a retrato isolado). */
+    missingSince?: number;
 }
 
 interface Desired {
@@ -80,6 +82,9 @@ let watchedUserId: string | null = null;
 /** Sala em que entramos sozinhos por causa de um Watch; saímos ao parar de assistir. */
 let autoJoinedRoomId: string | null = null;
 let lobbyRequested = false;
+let lobbyRequestedAt = 0;
+const LOBBY_POLL_MS = 5000;
+const MISSING_GRACE_MS = 10_000;
 /** Quem estamos puxando do SFU do Cloudflare (id do site); `null` = ninguém. */
 let cloudflareWanted: string | null = null;
 /** Há quanto tempo a nossa tela consta no servidor sem transmitirmos de verdade. */
@@ -787,18 +792,34 @@ function collectDesired(): Desired[] {
     return desired;
 }
 
+/**
+ * O servidor só manda o lobby quando assinamos: repetir a assinatura é o polling que
+ * mostra quem começou a compartilhar depois. Só roda em call (sem call não há tile).
+ */
+function pollLobby(state: ReturnType<typeof getButecoWebState>) {
+    if (!state.status.loggedIn) {
+        lobbyRequested = false;
+        lobbyRequestedAt = 0;
+        return;
+    }
+    if (lobbyRequested) return;
+
+    const first = state.lobby === null;
+    if (!first && (!getVoiceChannel() || Date.now() - lobbyRequestedAt < LOBBY_POLL_MS)) return;
+
+    lobbyRequested = true;
+    lobbyRequestedAt = Date.now();
+    void Promise.resolve(VesktopNative.buteco.web.lobby())
+        .catch(() => {})
+        .finally(() => {
+            lobbyRequested = false;
+        });
+}
+
 function sync() {
     const state = getButecoWebState();
 
-    // O lobby só chega depois da primeira assinatura; faz isso sem o painel aberto.
-    if (!state.status.loggedIn) {
-        lobbyRequested = false;
-    } else if (state.lobby === null && !lobbyRequested) {
-        lobbyRequested = true;
-        void Promise.resolve(VesktopNative.buteco.web.lobby()).catch(() => {
-            lobbyRequested = false;
-        });
-    }
+    pollLobby(state);
 
     // A sala em que entramos sozinhos acabou/fechou: esquece a marca.
     if (autoJoinedRoomId && state.room?.roomId !== autoJoinedRoomId && !watchedUserId) autoJoinedRoomId = null;
@@ -815,10 +836,17 @@ function sync() {
     let changed = false;
     for (const [discordUserId, source] of [...sources]) {
         const desired = wanted.get(discordUserId);
-        if (!desired || desired.roomId !== source.roomId || source.stream.channelId !== channel?.channelId) {
+        const sameChannel = source.stream.channelId === channel?.channelId;
+        if (!desired && sameChannel) {
+            // Um retrato isolado do servidor sem a tela não derruba o tile (nem o vídeo em andamento).
+            source.missingSince ??= Date.now();
+            if (Date.now() - source.missingSince < MISSING_GRACE_MS) continue;
+        }
+        if (!desired || desired.roomId !== source.roomId || !sameChannel) {
             removeSource(discordUserId);
             changed = true;
         } else {
+            source.missingSince = undefined;
             source.joined = desired.joined;
             if (desired.joined) refreshSourceTransport(source, desired);
         }
