@@ -5,7 +5,7 @@
  */
 
 import { findByProps, onceReady, wreq } from "@vencord/types/webpack";
-import { UserStore } from "@vencord/types/webpack/common";
+import { FluxDispatcher, UserStore } from "@vencord/types/webpack/common";
 import type { ButecoIceServer, ButecoResult } from "shared/buteco";
 
 import { findRoomStream, getButecoWebState, subscribeButecoWeb } from "./webState";
@@ -46,6 +46,8 @@ let video: HTMLVideoElement | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempts = 0;
 let starting = false;
+/** Streamer que o usuário mandou parar de assistir (menu nativo); limpo ao desinstalar. */
+let dismissedUserId: string | null = null;
 const debugLog: string[] = [];
 
 function note(message: string) {
@@ -321,6 +323,7 @@ function uninstall() {
     fakeStream = null;
     fakeParticipant = null;
     activeUserId = null;
+    dismissedUserId = null;
     installed = false;
 
     try {
@@ -517,11 +520,53 @@ function handleWatchClick(event: MouseEvent) {
 
     event.preventDefault();
     event.stopPropagation();
+    if (!focused && dismissedUserId === activeUserId) {
+        // Voltou a assistir depois de "parar" pelo menu nativo.
+        dismissedUserId = null;
+        if (activeUserId) void startPlayback(activeUserId);
+    }
     try {
         actions.selectParticipant(channel.channelId, focused ? null : fakeParticipant.id);
     } catch {
         // se a ação falhar, deixa o clique nativo seguir
     }
+}
+
+/**
+ * Menu nativo do tile (botão direito → Stop Streaming) e botões do player
+ * disparam STREAM_STOP/STREAM_CLOSE com a chave do nosso stream falso. Para o
+ * stream do próprio usuário isso para a transmissão do Buteco; para o de outra
+ * pessoa só pára de assistir (volta para a grade e fecha a conexão local).
+ */
+function handleStreamStop(event: { streamKey?: string }) {
+    if (!installed || !fakeStream || !fakeParticipant || event?.streamKey !== fakeStream.streamKey) return;
+
+    const { channelId } = fakeStream;
+    const { ownerId } = fakeStream;
+    const isSelf = ownerId === UserStore.getCurrentUser()?.id;
+    note(`stop nativo (${isSelf ? "próprio" : "outro"})`);
+
+    // Sai do player em foco antes de qualquer outra coisa.
+    try {
+        const rtc = findByProps("getStreamParticipants");
+        if (rtc?.getSelectedParticipantId?.(channelId) === fakeParticipant.id) {
+            findByProps("selectParticipant")?.selectParticipant?.(channelId, null);
+        }
+    } catch {
+        // sem seleção para limpar
+    }
+
+    if (isSelf) {
+        void import("../components/ScreenSharePicker")
+            .then(module => module.stopActiveButeco())
+            .then(() => VesktopNative.buteco.web.unpublish())
+            .catch(() => {});
+        return;
+    }
+
+    dismissedUserId = ownerId;
+    cancelRetry();
+    stopPlayback();
 }
 
 function sync() {
@@ -548,17 +593,27 @@ function sync() {
         if (!install(discordUserId, member.displayName, channel.channelId, channel.guildId)) return;
     }
 
-    void startPlayback(discordUserId);
+    if (discordUserId !== dismissedUserId) void startPlayback(discordUserId);
 }
 
 onceReady.then(() => {
     subscribeButecoWeb(sync);
     document.addEventListener("click", handleWatchClick, true);
+    FluxDispatcher.subscribe("STREAM_STOP", handleStreamStop);
+    FluxDispatcher.subscribe("STREAM_CLOSE", handleStreamStop);
 
     // O React remonta os tiles a cada mudança de layout; mantém o vídeo no
     // tile focado enquanto a conexão existir.
     const keepAlive = () => {
-        if (installed && !pc && activeUserId && !retryTimer && !starting && retryAttempts < MAX_RETRIES) {
+        if (
+            installed &&
+            !pc &&
+            activeUserId &&
+            activeUserId !== dismissedUserId &&
+            !retryTimer &&
+            !starting &&
+            retryAttempts < MAX_RETRIES
+        ) {
             void startPlayback(activeUserId);
             return;
         }
