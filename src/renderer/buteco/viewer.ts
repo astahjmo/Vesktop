@@ -358,7 +358,7 @@ function injectVideo(stream: MediaStream) {
     video.autoplay = true;
     video.playsInline = true;
     video.style.cssText =
-        "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:5;";
+        "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:5;pointer-events:none;";
     tile.style.position = "relative";
     tile.appendChild(video);
 
@@ -473,20 +473,26 @@ function stopPlayback() {
 }
 
 /**
- * Para o próprio streamer o Discord não abre o player pelo botão Watch (o tile
- * é tratado como "seu stream", com menu de Stop/Change). Interceptamos o clique
- * nesse botão do NOSSO tile e chamamos a ação nativa de seleção — o player
- * nativo abre normalmente.
+ * Para o próprio streamer o Discord trata o tile como "seu stream" (menu de
+ * Stop/Change) e não alterna o player. Interceptamos o clique no NOSSO tile:
+ * - na grade (botão Watch): foca o player nativo;
+ * - com o player em foco (clique no vídeo ou no Watch): volta para a grade.
+ * Botões nativos dentro do tile (Options etc.) seguem funcionando.
  */
 function handleWatchClick(event: MouseEvent) {
     if (!installed || !fakeParticipant) return;
 
     const target = event.target as HTMLElement | null;
-    const button = target?.closest("button, [role=button]");
-    if (!button || !/watch/i.test(button.textContent || "")) return;
-
-    const tile = button.closest<HTMLElement>(`[data-selenium-video-tile="${fakeParticipant.user?.id}"]`);
+    const tile = target?.closest<HTMLElement>(`[data-selenium-video-tile="${fakeParticipant.user?.id}"]`);
     if (!tile) return;
+
+    const button = target?.closest("button, [role=button]");
+    const isWatchButton = Boolean(button && /watch/i.test(button.textContent || ""));
+    const focused = tile.getBoundingClientRect().width > 600;
+    // Um botão que não é o Watch é do Discord (menu de opções etc.): não mexe.
+    if (button && !isWatchButton) return;
+    // Clique solto no tile só interessa com o player em foco.
+    if (!button && !focused) return;
 
     const channel = getVoiceChannel();
     const actions = findByProps("selectParticipant");
@@ -495,7 +501,7 @@ function handleWatchClick(event: MouseEvent) {
     event.preventDefault();
     event.stopPropagation();
     try {
-        actions.selectParticipant(channel.channelId, fakeParticipant.id);
+        actions.selectParticipant(channel.channelId, focused ? null : fakeParticipant.id);
     } catch {
         // se a ação falhar, deixa o clique nativo seguir
     }
