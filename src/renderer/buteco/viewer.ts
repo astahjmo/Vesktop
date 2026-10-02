@@ -83,32 +83,49 @@ function getVoiceChannel(): { channelId: string; guildId: string | null } | null
  * A sala do Buteco usa os ids do SITE (Better Auth), não os do Discord.
  * - Para nós mesmos: comparamos com o id do usuário logado no site.
  * - Para os outros: casamos o displayName com os membros da call (username,
- *   globalName ou nick), que é a única ponte disponível no payload.
+ *   globalName ou nick), que é a única ponte disponível no payload. Primeiro
+ *   por igualdade; depois ignorando símbolos/emoji, só se o resultado for único.
  */
 function resolveDiscordUserId(siteId: string, displayName: string): string | null {
     const self = UserStore.getCurrentUser();
     if (self && siteId === getButecoWebState().status.user?.id) return self.id;
 
     const channel = getVoiceChannel();
-    if (!channel?.guildId) return null;
+    if (!channel) return null;
 
-    const voiceStates = findByProps("getVoiceStates");
-    const states = (voiceStates?.getVoiceStates?.(channel.guildId) ?? {}) as Record<string, any>;
-    const normalize = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
-    const target = normalize(displayName);
+    const channelStore = findByProps("getChannel", "getDMFromUserId");
+    const voiceStates = findByProps("getVoiceStatesForChannel");
+    const channelObject = channelStore?.getChannel?.(channel.channelId);
+    const entries = (channelObject ? voiceStates?.getVoiceStatesForChannel?.(channelObject) : null) as
+        Array<{ voiceState?: { userId?: string }; nick?: string | null }> | null | undefined;
+    if (!entries?.length) return null;
 
-    for (const state of Object.values(states)) {
-        const user = UserStore.getUser(state.userId) as any;
-        if (!user) continue;
-        if (
-            normalize(user.username) === target ||
-            normalize(user.globalName) === target ||
-            normalize(state.nick) === target
-        ) {
-            return state.userId;
+    const candidates = entries
+        .map(entry => {
+            const userId = entry.voiceState?.userId;
+            const user = userId ? (UserStore.getUser(userId) as any) : null;
+            return userId && user ? { userId, names: [user.username, user.globalName, entry.nick] } : null;
+        })
+        .filter((candidate): candidate is { userId: string; names: Array<string | null | undefined> } => !!candidate);
+
+    const exact = (value: string | null | undefined) => (value ?? "").trim().toLowerCase();
+    const loose = (value: string | null | undefined) => (value ?? "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+
+    for (const [normalize, label] of [
+        [exact, "exato"],
+        [loose, "aproximado"]
+    ] as const) {
+        const target = normalize(displayName);
+        if (!target) continue;
+        const matches = candidates.filter(candidate => candidate.names.some(name => normalize(name) === target));
+        if (matches.length === 1) return matches[0].userId;
+        if (matches.length > 1) {
+            note(`nome ambíguo (${label}): "${displayName}" casa com ${matches.length} membros da call`);
+            return null;
         }
     }
 
+    note(`sem ponte site→Discord para "${displayName}"`);
     return null;
 }
 
