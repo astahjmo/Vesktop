@@ -179,3 +179,93 @@
         flex: 1;
     }
 }
+
+/* Buteco Games */
+.vcd-screen-picker-buteco {
+    display: grid;
+    gap: 0.75em;
+}
+
+.vcd-screen-picker-buteco[data-busy="true"] .vcd-screen-picker-screen-grid,
+.vcd-screen-picker-buteco[data-busy="true"] .vcd-screen-picker-card {
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+.vcd-screen-picker-room {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1em;
+}
+
+.vcd-screen-picker-error {
+    border: 1px solid var(--status-danger, #f23f43);
+}
+
+.vcd-screen-picker-screen-label[data-selected="true"] {
+    outline: 2px solid var(--brand-500);
+}
+
+.vcd-screen-picker-screen-label img {
+    max-width: 100%;
+    margin-bottom: 0.5em;
+}
+
+.vcd-screen-picker-source-icon {
+    margin: 0.75em 0;
+    opacity: 0.7;
+}
+
+.vcd-screen-picker-hint {
+    margin-top: 0.5em;
+    opacity: 0.8;
+}
+
+.vcd-screen-picker-audio-list {
+    display: grid;
+    gap: 0.25em;
+    margin: 0.5em 0;
+}
+
+.vcd-screen-picker-audio-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    cursor: pointer;
+}
+
+/* Início da transmissão: carregamento que trava o botão */
+.vcd-screen-picker-start-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1em;
+}
+
+.vcd-screen-picker-progress {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+}
+
+.vcd-screen-picker-progress p {
+    margin: 0;
+}
+
+.vcd-screen-picker-spinner {
+    display: inline-block;
+    flex: none;
+    width: 1.1em;
+    height: 1.1em;
+    border: 2px solid var(--primary-800, rgba(255, 255, 255, 0.2));
+    border-top-color: var(--brand-500, #5865f2);
+    border-radius: 50%;
+    animation: vcd-screen-picker-spin 0.8s linear infinite;
+}
+
+@keyframes vcd-screen-picker-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}

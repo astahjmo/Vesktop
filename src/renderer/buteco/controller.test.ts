@@ -376,6 +376,8 @@ describe("ButecoController transport fallback", () => {
         cloudflareStart?: () => Promise<any>;
         waitForConnected?: () => Promise<boolean>;
         publish?: ReturnType<typeof fakePublish>;
+        onPhase?: (phase: any) => void;
+        onTransportResult?: (transport: any, ok: boolean) => void;
     }) {
         const pc = fakePC();
         const display = fakeStream("vid1");
@@ -394,7 +396,9 @@ describe("ButecoController transport fallback", () => {
             unpublish,
             getScreenTransports: () => options.order,
             cloudflareScreen: { start: cloudflareStart, stop: cloudflareStop },
-            waitForConnected: options.waitForConnected
+            waitForConnected: options.waitForConnected,
+            onPhase: options.onPhase,
+            onTransportResult: options.onTransportResult
         });
         return { controller, pc, display, getDisplayMedia, cloudflareStart, cloudflareStop, unpublish, publish };
     }
@@ -456,6 +460,28 @@ describe("ButecoController transport fallback", () => {
         if (!res.ok) expect(res.error.code).toBe("sfu_unavailable");
         expect(t.display.tracks[0].stop).toHaveBeenCalled();
         expect(t.unpublish).toHaveBeenCalled();
+    });
+
+    it("reports the capture phase, each connection attempt and its result", async () => {
+        const onPhase = vi.fn();
+        const onTransportResult = vi.fn();
+        const t = setup({
+            order: ["mediamtx", "cloudflare"],
+            waitForConnected: async () => false,
+            onPhase,
+            onTransportResult
+        });
+
+        expect((await t.controller.start({ ...baseOpts, mic: false })).ok).toBe(true);
+        expect(onPhase.mock.calls.map(([phase]) => phase)).toEqual([
+            { step: "capture" },
+            { step: "connecting", transport: "mediamtx", attempt: 1, total: 2 },
+            { step: "connecting", transport: "cloudflare", attempt: 2, total: 2 }
+        ]);
+        expect(onTransportResult.mock.calls).toEqual([
+            ["mediamtx", false],
+            ["cloudflare", true]
+        ]);
     });
 
     it("tries a refused MediaMTX publish and then the other transport", async () => {

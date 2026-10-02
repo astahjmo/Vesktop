@@ -27,6 +27,7 @@ import type { ButecoError } from "shared/buteco";
 
 import { ButecoPanel } from "./ButecoPanel";
 import { disableButecoCamera, enableButecoCamera, useButecoCameraState } from "./cameraSession";
+import { isPublishStarting, setPublishPhase } from "./publishProgress";
 import { useButecoPublishing } from "./publishState";
 import { ensureButecoRoom, leaveAutoCreatedRoom } from "./room";
 import { useButecoWebState } from "./useButecoWeb";
@@ -261,23 +262,29 @@ function ButecoModal({ modalProps }: { modalProps: any }) {
     const [error, setError] = useState<ButecoError | null>(() => getLatestButecoError());
 
     async function onStart() {
-        if (!pick) return;
+        // Clicar de novo enquanto negocia só repetiria o pedido: o botão já está travado.
+        if (!pick || isPublishStarting()) return;
+        setPublishPhase({ step: "room" });
 
-        // Sem sala aberta, cria uma com nome aleatório e sem senha.
-        const room = await ensureButecoRoom({ exclusive: true });
-        if (!room.ok) {
-            setError(room.error);
-            return;
-        }
+        try {
+            // Sem sala aberta, cria uma com nome aleatório e sem senha.
+            const room = await ensureButecoRoom({ exclusive: true });
+            if (!room.ok) {
+                setError(room.error);
+                return;
+            }
 
-        const res = await startButecoPublish(pick);
-        if (!res.ok) {
-            setError(res.error);
-            // A sala nasceu só para esta transmissão: não deixa uma mesa vazia aberta.
-            void leaveAutoCreatedRoom();
-        } else {
-            setLatestButecoError(null);
-            modalProps.onClose();
+            const res = await startButecoPublish(pick);
+            if (!res.ok) {
+                setError(res.error);
+                // A sala nasceu só para esta transmissão: não deixa uma mesa vazia aberta.
+                void leaveAutoCreatedRoom();
+            } else {
+                setLatestButecoError(null);
+                modalProps.onClose();
+            }
+        } finally {
+            setPublishPhase({ step: "idle" });
         }
     }
 
@@ -292,7 +299,15 @@ function ButecoModal({ modalProps }: { modalProps: any }) {
             title="Buteco Games"
             actions={[
                 { text: "Parar", variant: "secondary", onClick: onStop },
-                { text: "Cancelar", variant: "secondary", onClick: () => modalProps.onClose() }
+                {
+                    text: "Cancelar",
+                    variant: "secondary",
+                    onClick: () => {
+                        // Cancelar no meio da negociação também interrompe a transmissão que estava subindo.
+                        if (isPublishStarting()) void stopActiveButeco();
+                        modalProps.onClose();
+                    }
+                }
             ]}
         >
             <ButecoPanel pick={pick} onPick={setPick} error={error} session={null} onStart={onStart} />

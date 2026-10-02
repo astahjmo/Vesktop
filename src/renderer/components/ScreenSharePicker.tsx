@@ -37,10 +37,12 @@ import type { Dispatch, SetStateAction } from "react";
 import { ButecoPanel } from "renderer/buteco/ButecoPanel";
 import { startCloudflareScreen, stopCloudflareScreen } from "renderer/buteco/cloudflareScreen";
 import { type ButecoController, createButecoController, type StartOptions } from "renderer/buteco/controller";
+import { setPublishPhase } from "renderer/buteco/publishProgress";
 import { setButecoPublishing } from "renderer/buteco/publishState";
 import { clampQuality } from "renderer/buteco/quality";
 import { screenTransportOrder } from "renderer/buteco/screenTransport";
 import { waitForConnected } from "renderer/buteco/sfuUtil";
+import { orderByHealth, recordTransportFailure, recordTransportSuccess } from "renderer/buteco/transportHealth";
 import { getButecoWebState } from "renderer/buteco/webState";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
@@ -225,10 +227,22 @@ async function findVirtmicDeviceId(): Promise<string | null> {
  * longer pending (see the armed-capture flow in `src/main/screenShare.ts`).
  */
 /** Tempo máximo esperando a mídia do MediaMTX conectar antes de tentar o outro transporte. */
-const MEDIAMTX_CONNECT_TIMEOUT_MS = 12_000;
+const MEDIAMTX_CONNECT_TIMEOUT_MS = 8_000;
 
-export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult<void>> {
+let startInFlight: Promise<ButecoResult<void>> | null = null;
+
+/** Só um início por vez: clicar de novo durante a negociação reaproveita o que já está em andamento. */
+export function startButecoPublish(pick: ButecoPick): Promise<ButecoResult<void>> {
+    startInFlight ??= startButecoPublishNow(pick).finally(() => {
+        startInFlight = null;
+        setPublishPhase({ step: "idle" });
+    });
+    return startInFlight;
+}
+
+async function startButecoPublishNow(pick: ButecoPick): Promise<ButecoResult<void>> {
     try {
+        setPublishPhase({ step: "capture" });
         await stopActiveButeco();
 
         // ICE primeiro: a captura só é armada imediatamente antes do start, para
@@ -256,7 +270,11 @@ export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult
             },
             unpublish: () => VesktopNative.buteco.web.unpublish() as Promise<ButecoResult<void>>,
             // Tenta o transporte que a sala indica e, se falhar, o outro (Cloudflare ↔ MediaMTX).
-            getScreenTransports: () => screenTransportOrder(getButecoWebState().room?.screenTransport),
+            // Um transporte que falhou há pouco vai para o fim: não espera de novo um servidor fora do ar.
+            getScreenTransports: () => orderByHealth(screenTransportOrder(getButecoWebState().room?.screenTransport)),
+            onPhase: setPublishPhase,
+            onTransportResult: (transport, ok) =>
+                ok ? recordTransportSuccess(transport) : recordTransportFailure(transport),
             cloudflareScreen: { start: startCloudflareScreen, stop: stopCloudflareScreen },
             waitForConnected: pc => waitForConnected(pc, MEDIAMTX_CONNECT_TIMEOUT_MS),
             getVirtmicDeviceId: findVirtmicDeviceId,

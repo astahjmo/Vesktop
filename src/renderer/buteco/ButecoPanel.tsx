@@ -4,7 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Button, Heading, HeadingTertiary, Paragraph } from "@vencord/types/components";
+import "renderer/components/screenSharePicker.css";
+
+import { classNameFactory } from "@vencord/types/api/Styles";
+import { Button, Card, FormSwitch, Heading, HeadingTertiary, Paragraph, Span } from "@vencord/types/components";
 import { useAwaiter, useForceUpdater } from "@vencord/types/utils";
 import { useState } from "@vencord/types/webpack/common";
 import type { Node } from "@vencord/venmic";
@@ -16,8 +19,13 @@ import type { ButecoError, ButecoSource } from "shared/buteco";
 import type { ButecoRoomState } from "shared/butecoWeb";
 
 import { BUTECO_ERROR_MESSAGES } from "./messages";
+import { describePhase } from "./publishProgress";
 import { BUTECO_FPS, BUTECO_HEIGHTS, clampFps, clampHeight } from "./quality";
 import { useButecoWebState } from "./useButecoWeb";
+import { usePublishPhase } from "./usePublishPhase";
+
+/** Mesmas classes do picker original, para o visual ser o mesmo. */
+const cl = classNameFactory("vcd-screen-picker-");
 
 type VirtmicList = Awaited<ReturnType<typeof VesktopNative.virtmic.list>>;
 
@@ -87,64 +95,193 @@ export function ButecoPanel({
     session: ButecoWireSession | null;
 }) {
     const web = useButecoWebState();
+    const phase = usePublishPhase();
+    const starting = phase.step !== "idle";
+    const [choosing, setChoosing] = useState(pick === null);
 
     // A lista de fontes não depende de sala: a sala nasce ao iniciar.
-    const [sources] = useAwaiter<ButecoSource[]>(
+    const [sources, , sourcesPending] = useAwaiter<ButecoSource[]>(
         () => (web.status.loggedIn ? VesktopNative.buteco.listSources() : Promise.resolve([])),
         { fallbackValue: [], deps: [web.status.loggedIn] }
     );
 
     if (!web.status.loggedIn) return <ButecoLogin />;
 
+    const selectedSource = sources.find(source => source.id === pick?.sourceId);
+
+    function choose(source: ButecoSource) {
+        onPick({
+            sourceId: source.id,
+            videoKind: source.kind,
+            videoLabel: source.name,
+            height: clampHeight(pick?.height, session?.limits.maxHeight),
+            fps: clampFps(pick?.fps, session?.limits.maxFps),
+            mic: pick?.mic ?? true,
+            contentHint: pick?.contentHint ?? "motion",
+            // Preserve a previously chosen audio selection when the user switches source.
+            includeAudioNodes: pick?.includeAudioNodes ?? [],
+            audioLabel: pick?.audioLabel ?? null
+        });
+        setChoosing(false);
+    }
+
+    return (
+        <div className={cl("buteco")} data-busy={starting}>
+            <ButecoRoomCard room={web.room} disabled={starting} displayName={web.status.user?.displayName ?? null} />
+
+            {error ? (
+                <Card className={cl("card", "error")}>
+                    <Paragraph>
+                        {error.code === "network" && error.message && !error.message.startsWith("HTTP")
+                            ? error.message
+                            : BUTECO_ERROR_MESSAGES[error.code]}
+                    </Paragraph>
+                </Card>
+            ) : null}
+
+            {choosing || !pick ? (
+                <SourceGrid
+                    sources={sources}
+                    loading={sourcesPending}
+                    selectedId={pick?.sourceId}
+                    onChoose={choose}
+                    onCancel={pick ? () => setChoosing(false) : undefined}
+                />
+            ) : (
+                <>
+                    <HeadingTertiary>O que você vai transmitir</HeadingTertiary>
+                    <Card className={cl("card", "preview")}>
+                        {selectedSource?.thumbnailDataUrl ? (
+                            <img
+                                src={selectedSource.thumbnailDataUrl}
+                                alt=""
+                                className={cl(isLinux ? "preview-img-linux" : "preview-img")}
+                            />
+                        ) : (
+                            <SourceIcon />
+                        )}
+                        <Paragraph>{pick.videoLabel}</Paragraph>
+                        <Button variant="secondary" size="small" disabled={starting} onClick={() => setChoosing(true)}>
+                            Trocar fonte
+                        </Button>
+                    </Card>
+
+                    <HeadingTertiary>Configurações da transmissão</HeadingTertiary>
+                    <Card className={cl("card")}>
+                        <ButecoQualityControls pick={pick} onPick={onPick} session={session} />
+                        <ButecoAudioPicker pick={pick} onPick={onPick} />
+                    </Card>
+                </>
+            )}
+
+            <div className={cl("start-row")}>
+                {starting ? (
+                    <div className={cl("progress")} role="status" aria-live="polite">
+                        <span className={cl("spinner")} aria-hidden="true" />
+                        <Paragraph>{describePhase(phase)}</Paragraph>
+                    </div>
+                ) : (
+                    <span />
+                )}
+                <Button disabled={!pick || choosing || starting} onClick={onStart}>
+                    {starting ? "Conectando…" : "Iniciar"}
+                </Button>
+            </div>
+        </div>
+    );
+}
+
+function SourceIcon() {
+    return (
+        <svg className={cl("source-icon")} aria-hidden="true" width="64" height="64" viewBox="0 0 24 24">
+            <path
+                fill="currentColor"
+                d="M2 4.5C2 3.397 2.897 2.5 4 2.5H20C21.103 2.5 22 3.397 22 4.5V15.5C22 16.604 21.103 17.5 20 17.5H13V19.5H17V21.5H7V19.5H11V17.5H4C2.897 17.5 2 16.604 2 15.5V4.5ZM4 4.5V15.5H20V4.5H4Z"
+            />
+        </svg>
+    );
+}
+
+/** Grade de telas e janelas, no mesmo formato do picker original. */
+function SourceGrid({
+    sources,
+    loading,
+    selectedId,
+    onChoose,
+    onCancel
+}: {
+    sources: ButecoSource[];
+    loading: boolean;
+    selectedId?: string;
+    onChoose: (source: ButecoSource) => void;
+    onCancel?: () => void;
+}) {
     return (
         <div>
-            {web.room ? (
-                <ButecoRoomHeader room={web.room} />
+            <HeadingTertiary>Escolha o que compartilhar</HeadingTertiary>
+            {loading && sources.length === 0 ? (
+                <div className={cl("progress")} role="status">
+                    <span className={cl("spinner")} aria-hidden="true" />
+                    <Paragraph>Procurando telas e janelas…</Paragraph>
+                </div>
+            ) : sources.length === 0 ? (
+                <Paragraph>Nenhuma tela ou janela encontrada.</Paragraph>
             ) : (
-                <Paragraph>
-                    Conectado como {web.status.user?.displayName ?? "—"}. Ao iniciar, uma sala com nome aleatório e sem
-                    senha é criada para você.
-                </Paragraph>
+                <div className={cl("screen-grid")}>
+                    {sources.map(source => (
+                        <label key={source.id} className={cl("screen-label")} data-selected={source.id === selectedId}>
+                            <input
+                                type="radio"
+                                className={cl("screen-radio")}
+                                name="buteco-source"
+                                value={source.id}
+                                checked={source.id === selectedId}
+                                onChange={() => onChoose(source)}
+                            />
+                            {source.thumbnailDataUrl ? <img src={source.thumbnailDataUrl} alt="" /> : <SourceIcon />}
+                            <Paragraph className={cl("screen-name")}>{source.name}</Paragraph>
+                        </label>
+                    ))}
+                </div>
             )}
-            {error ? (
-                <Paragraph>
-                    {error.code === "network" && error.message && !error.message.startsWith("HTTP")
-                        ? error.message
-                        : BUTECO_ERROR_MESSAGES[error.code]}
-                </Paragraph>
+            {onCancel ? (
+                <Button variant="secondary" size="small" onClick={onCancel}>
+                    Voltar
+                </Button>
             ) : null}
-            <HeadingTertiary>Fonte</HeadingTertiary>
-            <div>
-                {sources.map(s => (
-                    <button
-                        key={s.id}
-                        type="button"
-                        data-selected={pick?.sourceId === s.id}
-                        onClick={() =>
-                            onPick({
-                                sourceId: s.id,
-                                videoKind: s.kind,
-                                videoLabel: s.name,
-                                height: clampHeight(pick?.height, session?.limits.maxHeight),
-                                fps: clampFps(pick?.fps, session?.limits.maxFps),
-                                mic: pick?.mic ?? true,
-                                // Preserve a previously chosen audio selection when
-                                // the user switches source.
-                                includeAudioNodes: pick?.includeAudioNodes ?? [],
-                                audioLabel: pick?.audioLabel ?? null
-                            })
-                        }
-                    >
-                        {s.thumbnailDataUrl ? <img src={s.thumbnailDataUrl} alt="" /> : null}
-                        {s.name}
-                    </button>
-                ))}
-            </div>
-            {pick ? <ButecoQualityControls pick={pick} onPick={onPick} session={session} /> : null}
-            {pick ? <ButecoAudioPicker pick={pick} onPick={onPick} /> : null}
-            <Button disabled={!pick} onClick={onStart}>
-                Iniciar
-            </Button>
+        </div>
+    );
+}
+
+/** Mesmos botões segmentados do picker original. */
+function OptionRadio<T extends string | number>({
+    name,
+    options,
+    labels,
+    value,
+    onChange
+}: {
+    name: string;
+    options: readonly T[];
+    labels?: string[];
+    value: T;
+    onChange: (option: T) => void;
+}) {
+    return (
+        <div className={cl("option-radios")}>
+            {options.map((option, index) => (
+                <label className={cl("option-radio")} data-checked={value === option} key={option}>
+                    <Span weight="bold">{labels?.[index] ?? String(option)}</Span>
+                    <input
+                        className={cl("option-input")}
+                        type="radio"
+                        name={name}
+                        value={option}
+                        checked={value === option}
+                        onChange={() => onChange(option)}
+                    />
+                </label>
+            ))}
         </div>
     );
 }
@@ -174,17 +311,38 @@ function ButecoLogin() {
     );
 }
 
-function ButecoRoomHeader({ room }: { room: ButecoRoomState }) {
+function ButecoRoomCard({
+    room,
+    disabled,
+    displayName
+}: {
+    room: ButecoRoomState | null;
+    disabled: boolean;
+    displayName: string | null;
+}) {
     return (
-        <div>
-            <HeadingTertiary>{room.name}</HeadingTertiary>
-            <Paragraph>
-                {room.members.length} na sala ·{" "}
-                <Button variant="secondary" onClick={() => void VesktopNative.buteco.web.leaveRoom()}>
+        <Card className={cl("card", "room")}>
+            <div>
+                <Paragraph>
+                    <Span weight="bold">{room ? room.name : "Sala automática"}</Span>
+                </Paragraph>
+                <Paragraph>
+                    {room
+                        ? `${room.members.length} na sala`
+                        : `Conectado como ${displayName ?? "—"}. Ao iniciar, uma sala com nome aleatório e sem senha é criada para você.`}
+                </Paragraph>
+            </div>
+            {room ? (
+                <Button
+                    variant="secondary"
+                    size="small"
+                    disabled={disabled}
+                    onClick={() => void VesktopNative.buteco.web.leaveRoom()}
+                >
                     Sair da sala
                 </Button>
-            </Paragraph>
-        </div>
+            ) : null}
+        </Card>
     );
 }
 
@@ -207,53 +365,56 @@ function ButecoQualityControls({
     const fps = clampFps(pick.fps, limits?.maxFps);
     const heights = BUTECO_HEIGHTS.filter(h => h <= (limits?.maxHeight ?? BUTECO_HEIGHTS[BUTECO_HEIGHTS.length - 1]));
     const fpsOptions = BUTECO_FPS.filter(f => f <= (limits?.maxFps ?? BUTECO_FPS[BUTECO_FPS.length - 1]));
+    const contentHint = pick.contentHint === "detail" ? "detail" : "motion";
 
     return (
-        <div>
-            <HeadingTertiary>Qualidade</HeadingTertiary>
-            <section>
-                <Heading tag="h5">Resolução</Heading>
-                <div>
-                    {(heights.length ? heights : [BUTECO_HEIGHTS[0]]).map(option => (
-                        <label key={option} data-checked={height === option}>
-                            <input
-                                type="radio"
-                                name="buteco-height"
-                                value={option}
-                                checked={height === option}
-                                onChange={() => onPick({ ...pick, height: option })}
-                            />
-                            {option}p
-                        </label>
-                    ))}
-                </div>
-            </section>
-            <section>
-                <Heading tag="h5">Taxa de quadros</Heading>
-                <div>
-                    {(fpsOptions.length ? fpsOptions : [BUTECO_FPS[0]]).map(option => (
-                        <label key={option} data-checked={fps === option}>
-                            <input
-                                type="radio"
-                                name="buteco-fps"
-                                value={option}
-                                checked={fps === option}
-                                onChange={() => onPick({ ...pick, fps: option })}
-                            />
-                            {option} fps
-                        </label>
-                    ))}
-                </div>
-            </section>
-            <label>
-                <input
-                    type="checkbox"
-                    checked={pick.mic}
-                    onChange={e => onPick({ ...pick, mic: e.currentTarget.checked })}
-                />
-                Microfone
-            </label>
-        </div>
+        <>
+            <div className={cl("quality")}>
+                <section className={cl("quality-section")}>
+                    <Heading tag="h5">Resolução</Heading>
+                    <OptionRadio
+                        name="buteco-height"
+                        options={heights.length ? heights : [BUTECO_HEIGHTS[0]]}
+                        labels={(heights.length ? heights : [BUTECO_HEIGHTS[0]]).map(option => `${option}p`)}
+                        value={height}
+                        onChange={option => onPick({ ...pick, height: option })}
+                    />
+                </section>
+                <section className={cl("quality-section")}>
+                    <Heading tag="h5">Taxa de quadros</Heading>
+                    <OptionRadio
+                        name="buteco-fps"
+                        options={fpsOptions.length ? fpsOptions : [BUTECO_FPS[0]]}
+                        labels={(fpsOptions.length ? fpsOptions : [BUTECO_FPS[0]]).map(option => `${option} fps`)}
+                        value={fps}
+                        onChange={option => onPick({ ...pick, fps: option })}
+                    />
+                </section>
+            </div>
+            <div className={cl("quality")}>
+                <section className={cl("quality-section")}>
+                    <Heading tag="h5">Tipo de conteúdo</Heading>
+                    <OptionRadio
+                        name="buteco-content"
+                        options={["motion", "detail"] as const}
+                        labels={["Priorizar fluidez", "Priorizar nitidez"]}
+                        value={contentHint}
+                        onChange={option => onPick({ ...pick, contentHint: option })}
+                    />
+                    <Paragraph className={cl("hint")}>
+                        &quot;Priorizar nitidez&quot; reduz bastante a taxa de quadros em troca de uma imagem muito mais
+                        limpa (bom para texto e código).
+                    </Paragraph>
+                </section>
+            </div>
+            <FormSwitch
+                title="Microfone"
+                hideBorder
+                value={pick.mic}
+                onChange={checked => onPick({ ...pick, mic: checked })}
+                className={cl("audio")}
+            />
+        </>
     );
 }
 
@@ -293,11 +454,13 @@ function ButecoAudioPicker({ pick, onPick }: { pick: ButecoPick; onPick: (p: But
 
     return (
         <div>
-            <HeadingTertiary>Áudio do sistema</HeadingTertiary>
-            <label>
-                <input type="checkbox" checked={enabled} onChange={e => setEnabledState(e.currentTarget.checked)} />
-                Compartilhar áudio do sistema
-            </label>
+            <FormSwitch
+                title="Compartilhar áudio do sistema"
+                hideBorder
+                value={enabled}
+                onChange={setEnabledState}
+                className={cl("audio")}
+            />
             {enabled ? (
                 <>
                     {!venmic.ok ? (
@@ -326,21 +489,23 @@ function ButecoAudioPicker({ pick, onPick }: { pick: ButecoPick; onPick: (p: But
                             Aviso: pipewire-pulse não encontrado; apenas apps sob PipeWire terão o áudio compartilhado.
                         </Paragraph>
                     ) : null}
-                    <div>
+                    <div className={cl("audio-list")}>
                         {items.map(item => (
-                            <label key={item.name}>
+                            <label key={item.name} className={cl("audio-item")}>
                                 <input
                                     type="checkbox"
                                     checked={(pick.includeAudioNodes ?? []).some(node => isSameNode(node, item.value))}
                                     onChange={() => toggleNode(item.value)}
                                 />
-                                {item.name}
+                                <Span>{item.name}</Span>
                             </label>
                         ))}
                     </div>
-                    <Button variant="secondary" onClick={refreshAudioSources}>
-                        Atualizar fontes de áudio
-                    </Button>
+                    <div className={cl("settings-buttons")}>
+                        <Button variant="secondary" size="small" onClick={refreshAudioSources}>
+                            Atualizar fontes de áudio
+                        </Button>
+                    </div>
                 </>
             ) : null}
         </div>

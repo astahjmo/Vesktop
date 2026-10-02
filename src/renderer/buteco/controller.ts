@@ -13,6 +13,7 @@ import type {
     ButecoSession
 } from "shared/buteco";
 
+import type { PublishPhase } from "./publishProgress";
 import type { ScreenTransport } from "./screenTransport";
 
 export interface StartOptions {
@@ -39,6 +40,10 @@ export interface ControllerDeps {
         start(track: MediaStreamTrack, opts: StartOptions): Promise<ButecoResult<void>>;
         stop(): Promise<void>;
     };
+    /** Em que fase está o início da transmissão (a UI mostra um carregamento). */
+    onPhase?(phase: PublishPhase): void;
+    /** Resultado de cada tentativa de transporte (alimenta a ordem das próximas). */
+    onTransportResult?(transport: ScreenTransport, ok: boolean): void;
     /** Espera a mídia do PC do MediaMTX conectar; sem isso a publicação não é validada. */
     waitForConnected?(pc: RTCPeerConnection): Promise<boolean>;
     getSession(): ButecoSession | null;
@@ -190,6 +195,7 @@ export function createButecoController(deps: ControllerDeps): ButecoController {
         if (!session) return { ok: false, error: { code: "token_invalid", message: "Sem sessão." } };
 
         try {
+            deps.onPhase?.({ step: "capture" });
             const captured = await deps.getDisplayMedia({ video: true, audio: false });
             display = captured;
             const videoTrack = captured.getVideoTracks()[0];
@@ -207,12 +213,14 @@ export function createButecoController(deps: ControllerDeps): ButecoController {
             const order = deps.getScreenTransports?.() ?? ["mediamtx"];
             let lastError: ButecoError | null = null;
 
-            for (const transport of order) {
+            for (const [index, transport] of order.entries()) {
+                deps.onPhase?.({ step: "connecting", transport, attempt: index + 1, total: order.length });
                 const result =
                     transport === "cloudflare"
                         ? await startCloudflare(videoTrack, opts)
                         : await startMediamtx(session, captured, videoTrack, opts);
 
+                deps.onTransportResult?.(transport, result.ok);
                 if (result.ok) {
                     activeTransport = transport;
                     return result;
