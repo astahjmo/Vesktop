@@ -40,6 +40,7 @@ let origRtc: {
 let origStreams: { getActiveStreamForApplicationStream: any; getActiveStreamForStreamKey: any } | null = null;
 
 let pc: RTCPeerConnection | null = null;
+let mediaStream: MediaStream | null = null;
 let video: HTMLVideoElement | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempts = 0;
@@ -200,13 +201,24 @@ function uninstall() {
     }
 }
 
-/** Container do player em foco (a área grande da call). */
-function findPlayerContainer(): HTMLElement | null {
-    const candidates = [...document.querySelectorAll<HTMLElement>('[class*="layerContainer"]')].filter(element => {
-        const rect = element.getBoundingClientRect();
-        return rect.width > 600 && rect.height > 300;
-    });
-    return candidates[0] ?? null;
+/** O tile do NOSSO stream: atributo de vídeo do usuário + botão Watch. */
+function findFakeTile(): HTMLElement | null {
+    if (!fakeParticipant) return null;
+    const userId = fakeParticipant.user?.id;
+    if (!userId) return null;
+
+    const tiles = [...document.querySelectorAll<HTMLElement>(`[data-selenium-video-tile="${userId}"]`)];
+    return tiles.find(tile => /watch/i.test(tile.textContent || "")) ?? null;
+}
+
+/** O tile focado (player): o nosso tile quando está grande. */
+function findFocusedTile(): HTMLElement | null {
+    if (!fakeParticipant) return null;
+    const userId = fakeParticipant.user?.id;
+    if (!userId) return null;
+
+    const tiles = [...document.querySelectorAll<HTMLElement>(`[data-selenium-video-tile="${userId}"]`)];
+    return tiles.find(tile => tile.getBoundingClientRect().width > 600) ?? null;
 }
 
 function removeVideo() {
@@ -215,10 +227,14 @@ function removeVideo() {
 }
 
 function injectVideo(stream: MediaStream) {
-    const container = findPlayerContainer();
-    if (!container) return;
+    const tile = findFocusedTile();
+    if (!tile) {
+        // Sem player em foco: o tile nativo fica como está (botão Watch).
+        removeVideo();
+        return;
+    }
 
-    if (video && document.contains(video) && video.parentElement === container) {
+    if (video && document.contains(video) && video.parentElement === tile) {
         if (video.srcObject !== stream) video.srcObject = stream;
         return;
     }
@@ -230,8 +246,8 @@ function injectVideo(stream: MediaStream) {
     video.playsInline = true;
     video.style.cssText =
         "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:5;";
-    container.style.position = "relative";
-    container.appendChild(video);
+    tile.style.position = "relative";
+    tile.appendChild(video);
 
     video.srcObject = stream;
     void video.play().catch(() => {
@@ -275,6 +291,7 @@ async function startPlayback(userId: string) {
     const connection = new RTCPeerConnection({ iceServers: ice.value, bundlePolicy: "max-bundle" });
     pc = connection;
     const stream = new MediaStream();
+    mediaStream = stream;
 
     const videoTransceiver = connection.addTransceiver("video", { direction: "recvonly" });
     const codecs = RTCRtpSender.getCapabilities?.("video")?.codecs;
@@ -320,6 +337,7 @@ async function startPlayback(userId: string) {
 function stopPlayback() {
     pc?.close();
     pc = null;
+    mediaStream = null;
     removeVideo();
 }
 
@@ -336,8 +354,8 @@ function handleWatchClick(event: MouseEvent) {
     const button = target?.closest("button, [role=button]");
     if (!button || !/watch/i.test(button.textContent || "")) return;
 
-    const tile = button.closest('[class*="tile_"]');
-    if (!tile || !(tile.textContent || "").includes(fakeParticipant.userNick)) return;
+    const tile = button.closest<HTMLElement>(`[data-selenium-video-tile="${fakeParticipant.user?.id}"]`);
+    if (!tile) return;
 
     const channel = getVoiceChannel();
     const actions = findByProps("selectParticipant");
@@ -375,15 +393,21 @@ onceReady.then(() => {
     subscribeButecoWeb(sync);
     document.addEventListener("click", handleWatchClick, true);
 
-    // O React troca o container do player; se nosso vídeo sumir, volta.
-    const observer = new MutationObserver(() => {
-        if (!pc) return;
-        if (!video || !document.contains(video)) {
-            const stream = (video?.srcObject as MediaStream | null) ?? null;
-            if (stream) injectVideo(stream);
+    // O React remonta os tiles a cada mudança de layout; mantém o vídeo no
+    // tile focado enquanto a conexão existir.
+    const keepAlive = () => {
+        if (!pc || !mediaStream) return;
+        const tile = findFocusedTile();
+        if (!tile) {
+            removeVideo();
+            return;
         }
-    });
+        if (!video || !document.contains(video) || video.parentElement !== tile) injectVideo(mediaStream);
+    };
+
+    const observer = new MutationObserver(keepAlive);
     observer.observe(document.body, { childList: true, subtree: true });
+    setInterval(keepAlive, 1000);
 
     sync();
 });
