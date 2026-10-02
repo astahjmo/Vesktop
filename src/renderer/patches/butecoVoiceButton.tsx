@@ -4,12 +4,12 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { ButecoCallButton } from "renderer/buteco/VoicePanelButton";
+import { ButecoCallButtons } from "renderer/buteco/VoicePanelButton";
 
 import { addPatch } from "./shared";
 
 /**
- * Injects a standalone "Buteco Games" button into both of Discord's voice
+ * Injects the standalone "Buteco Games" buttons (share + camera) into both of Discord's voice
  * control rows:
  *
  * 1. The compact voice panel in the sidebar (the row with camera / screen /
@@ -46,6 +46,6 @@ addPatch({
     ],
 
     renderButecoButton() {
-        return <ButecoCallButton />;
+        return <ButecoCallButtons />;
     }
 });

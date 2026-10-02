@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import "./cameraTiles";
 import "./viewer";
 
 import { onceReady } from "@vencord/types/webpack";

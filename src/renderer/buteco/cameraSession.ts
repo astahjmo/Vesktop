@@ -112,6 +112,11 @@ export function getButecoCameraState(): ButecoCameraState {
     return state;
 }
 
+/** Stream da webcam local enquanto a câmera do Buteco está ligada. */
+export function getLocalCameraStream(): MediaStream | null {
+    return state.enabled ? localStream : null;
+}
+
 function setState(patch: Partial<ButecoCameraState>) {
     state = { ...state, ...patch };
     for (const listener of [...listeners]) {

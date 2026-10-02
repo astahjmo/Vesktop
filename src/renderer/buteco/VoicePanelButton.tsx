@@ -15,7 +15,9 @@ import {
 import type { ButecoError } from "shared/buteco";
 
 import { ButecoPanel } from "./ButecoPanel";
+import { disableButecoCamera, enableButecoCamera, useButecoCameraState } from "./cameraSession";
 import { useButecoPublishing } from "./publishState";
+import { useButecoWebState } from "./useButecoWeb";
 
 /**
  * A Discord-styled call-tray control for the Buteco share. While idle it opens
@@ -95,6 +97,85 @@ export function ButecoCallButton() {
                 />
             ) : null}
         </button>
+    );
+}
+
+/**
+ * Liga/desliga a câmera do Buteco na sala aberta, direto da barra da chamada.
+ * Sem login ou sem sala abre o painel para entrar primeiro.
+ */
+export function ButecoCameraButton() {
+    const camera = useButecoCameraState();
+    const web = useButecoWebState();
+
+    const label = camera.enabled ? "Desligar câmera do Buteco" : "Ligar câmera do Buteco";
+
+    return (
+        <button
+            type="button"
+            className="vc-buteco-camera-button"
+            aria-label={label}
+            aria-pressed={camera.enabled}
+            title={camera.error ?? label}
+            disabled={camera.busy}
+            onClick={() => {
+                if (camera.enabled) void disableButecoCamera();
+                else if (!web.status.loggedIn || !web.room) openButecoModal();
+                else void enableButecoCamera();
+            }}
+            style={{
+                position: "relative",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 32,
+                height: 32,
+                padding: 0,
+                margin: "0 4px",
+                border: "none",
+                borderRadius: 4,
+                cursor: camera.busy ? "progress" : "pointer",
+                opacity: camera.busy ? 0.6 : 1,
+                color: camera.enabled
+                    ? "var(--status-positive, #23a55a)"
+                    : camera.error
+                      ? "var(--status-danger, #f23f43)"
+                      : "var(--interactive-normal, currentColor)",
+                background: "var(--background-primary, transparent)"
+            }}
+        >
+            <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24">
+                <path
+                    fill="currentColor"
+                    d="M4 5H14C15.105 5 16 5.895 16 7V9.5L21 6.5V17.5L16 14.5V17C16 18.105 15.105 19 14 19H4C2.895 19 2 18.105 2 17V7C2 5.895 2.895 5 4 5Z"
+                />
+            </svg>
+            {camera.enabled ? (
+                <span
+                    aria-hidden="true"
+                    style={{
+                        position: "absolute",
+                        right: 2,
+                        bottom: 2,
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: "var(--status-positive, #23a55a)",
+                        boxShadow: "0 0 0 2px var(--background-primary, #313338)"
+                    }}
+                />
+            ) : null}
+        </button>
+    );
+}
+
+/** Botões do Buteco na barra: transmissão de tela + câmera. */
+export function ButecoCallButtons() {
+    return (
+        <>
+            <ButecoCallButton />
+            <ButecoCameraButton />
+        </>
     );
 }
 
