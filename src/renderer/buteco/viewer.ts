@@ -68,6 +68,39 @@ function getVoiceChannel(): { channelId: string; guildId: string | null } | null
     return { channelId, guildId };
 }
 
+/**
+ * A sala do Buteco usa os ids do SITE (Better Auth), não os do Discord.
+ * - Para nós mesmos: comparamos com o id do usuário logado no site.
+ * - Para os outros: casamos o displayName com os membros da call (username,
+ *   globalName ou nick), que é a única ponte disponível no payload.
+ */
+function resolveDiscordUserId(siteId: string, displayName: string): string | null {
+    const self = UserStore.getCurrentUser();
+    if (self && siteId === getButecoWebState().status.user?.id) return self.id;
+
+    const channel = getVoiceChannel();
+    if (!channel?.guildId) return null;
+
+    const voiceStates = findByProps("getVoiceStates");
+    const states = (voiceStates?.getVoiceStates?.(channel.guildId) ?? {}) as Record<string, any>;
+    const normalize = (value: string | undefined | null) => (value ?? "").trim().toLowerCase();
+    const target = normalize(displayName);
+
+    for (const state of Object.values(states)) {
+        const user = UserStore.getUser(state.userId) as any;
+        if (!user) continue;
+        if (
+            normalize(user.username) === target ||
+            normalize(user.globalName) === target ||
+            normalize(state.nick) === target
+        ) {
+            return state.userId;
+        }
+    }
+
+    return null;
+}
+
 /** Instala o stream/participante falso e patcha os stores. */
 function install(userId: string, displayName: string, channelId: string, guildId: string | null): boolean {
     if (installed && activeUserId === userId) return true;
@@ -381,12 +414,20 @@ function sync() {
         return;
     }
 
-    if (!installed || activeUserId !== member.userId) {
+    const discordUserId = resolveDiscordUserId(member.userId, member.displayName);
+    if (!discordUserId) {
+        // Sem ponte site→Discord para esse membro; não dá para injetar.
         if (installed) uninstall();
-        if (!install(member.userId, member.displayName, channel.channelId, channel.guildId)) return;
+        stopPlayback();
+        return;
     }
 
-    void startPlayback(member.userId);
+    if (!installed || activeUserId !== discordUserId) {
+        if (installed) uninstall();
+        if (!install(discordUserId, member.displayName, channel.channelId, channel.guildId)) return;
+    }
+
+    void startPlayback(discordUserId);
 }
 
 onceReady.then(() => {
