@@ -1,0 +1,60 @@
+name: Sync upstream
+
+# Traz as novidades do Vesktop original (Vencord/Vesktop) para este fork: todo
+# domingo (ou manualmente) cria uma branch com o merge e abre um PR para você
+# revisar. Conflitos, se houver, ficam no PR para resolver à mão.
+on:
+    schedule:
+        - cron: "0 9 * * 0"
+    workflow_dispatch:
+
+permissions:
+    contents: write
+    pull-requests: write
+
+env:
+    UPSTREAM: https://github.com/Vencord/Vesktop.git
+    TARGET_BRANCH: feat/buteco-games
+
+jobs:
+    sync:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  ref: ${{ env.TARGET_BRANCH }}
+                  fetch-depth: 0
+
+            - name: Fetch upstream
+              run: |
+                  git remote add upstream "$UPSTREAM"
+                  git fetch upstream main
+
+            - name: Check for new commits
+              id: check
+              run: |
+                  behind=$(git rev-list --count "HEAD..upstream/main")
+                  echo "behind=$behind" >> "$GITHUB_OUTPUT"
+                  echo "$behind commit(s) novos no upstream"
+
+            - name: Merge into a sync branch and open a PR
+              if: ${{ steps.check.outputs.behind != '0' }}
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  branch="sync/upstream-$(date +%Y%m%d)"
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git checkout -b "$branch"
+
+                  if git merge --no-edit upstream/main; then
+                      body="Merge automático de \`Vencord/Vesktop@main\`. Sem conflitos."
+                  else
+                      git add -A
+                      git commit --no-edit -m "Merge upstream/main (com conflitos para resolver)" || true
+                      body="Merge de \`Vencord/Vesktop@main\` **com conflitos**: resolva os marcadores \`<<<<<<<\` antes de aprovar."
+                  fi
+
+                  git push origin "$branch"
+                  gh pr create --base "$TARGET_BRANCH" --head "$branch" \
+                      --title "Sync com o upstream ($(date +%Y-%m-%d))" --body "$body"

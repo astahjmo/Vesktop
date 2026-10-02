@@ -1,6 +1,6 @@
 {
     "name": "vesktop",
-    "version": "1.6.7",
+    "version": "1.6.8",
     "private": true,
     "description": "Vesktop is a custom Discord desktop app",
     "keywords": [],
@@ -121,6 +121,12 @@
                         "x64",
                         "arm64"
                     ]
+                },
+                {
+                    "target": "pacman",
+                    "arch": [
+                        "x64"
+                    ]
                 }
             ],
             "desktop": {
@@ -153,8 +159,8 @@
                 "com.apple.security.device.camera": true,
                 "CFBundleIconName": "Icon"
             },
-            "requirements": "build/signing-requirements.txt",
-            "notarize": true
+            "notarize": false,
+            "identity": null
         },
         "dmg": {
             "background": "build/background.tiff",
@@ -201,7 +207,10 @@
             ]
         },
         "publish": {
-            "provider": "github"
+            "provider": "github",
+            "owner": "astahjmo",
+            "repo": "Vesktop",
+            "releaseType": "draft"
         },
         "rpm": {
             "fpm": [
@@ -217,6 +226,14 @@
             "onlyLoadAppFromAsar": true,
             "loadBrowserProcessSpecificV8Snapshot": false,
             "grantFileProtocolExtraPrivileges": false
-        }
+        },
+        "artifactName": "Vesktop-Buteco-${version}-${os}-${arch}.${ext}"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/astahjmo/Vesktop.git"
+    },
+    "bugs": {
+        "url": "https://github.com/astahjmo/Vesktop/issues"
     }
 }
