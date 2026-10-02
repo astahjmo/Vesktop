@@ -8,6 +8,9 @@ import { onceReady } from "@vencord/types/webpack";
 import { UserStore } from "@vencord/types/webpack/common";
 
 import { getLocalCameraStream, subscribeButecoCamera } from "./cameraSession";
+import { resolveDiscordUserId } from "./discordBridge";
+import { getRemoteStream, subscribeRemoteStreams } from "./sfu";
+import { getButecoWebState } from "./webState";
 
 /**
  * Câmera do Buteco dentro dos tiles do próprio Discord: o vídeo entra no
@@ -70,6 +73,38 @@ function sync() {
     }
 }
 
+/** Câmeras de outros membros: id do site → usuário do Discord a quem o vídeo pertence. */
+const remoteOwners = new Map<string, string>();
+
+/** Liga a câmera remota ao tile da pessoa; se a ponte ainda não casou o nome, tenta de novo depois. */
+function applyRemoteCamera(siteUserId: string, stream: MediaStream | null) {
+    const previous = remoteOwners.get(siteUserId);
+
+    if (!stream) {
+        if (previous) setUserCameraStream(previous, null);
+        remoteOwners.delete(siteUserId);
+        return;
+    }
+
+    const member = getButecoWebState().room?.members.find(candidate => candidate.userId === siteUserId);
+    const discordUserId = member ? resolveDiscordUserId(siteUserId, member.displayName) : null;
+    if (!discordUserId) return;
+
+    if (previous && previous !== discordUserId) setUserCameraStream(previous, null);
+    remoteOwners.set(siteUserId, discordUserId);
+    setUserCameraStream(discordUserId, stream);
+}
+
+/** Reaplica as câmeras remotas que chegaram antes de a pessoa estar na call (ponte sem casar). */
+function retryUnmatchedRemotes() {
+    for (const member of getButecoWebState().room?.members ?? []) {
+        if (member.cameraId && !remoteOwners.has(member.userId)) {
+            const stream = getRemoteStream(member.userId, "camera");
+            if (stream) applyRemoteCamera(member.userId, stream);
+        }
+    }
+}
+
 function syncSelf() {
     const selfId = UserStore.getCurrentUser()?.id;
     if (!selfId) return;
@@ -78,7 +113,13 @@ function syncSelf() {
 
 onceReady.then(() => {
     subscribeButecoCamera(syncSelf);
+    subscribeRemoteStreams((siteUserId, kind, stream) => {
+        if (kind === "camera") applyRemoteCamera(siteUserId, stream);
+    });
     // O React remonta os tiles a cada mudança de layout.
     new MutationObserver(sync).observe(document.body, { childList: true, subtree: true });
-    setInterval(sync, 1000);
+    setInterval(() => {
+        retryUnmatchedRemotes();
+        sync();
+    }, 1000);
 });

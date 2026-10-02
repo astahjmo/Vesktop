@@ -35,9 +35,13 @@ import { Node } from "@vencord/venmic";
 import type { ButecoEventEnvelope, ButecoWireSession } from "main/buteco/store";
 import type { Dispatch, SetStateAction } from "react";
 import { ButecoPanel } from "renderer/buteco/ButecoPanel";
+import { startCloudflareScreen, stopCloudflareScreen } from "renderer/buteco/cloudflareScreen";
 import { type ButecoController, createButecoController, type StartOptions } from "renderer/buteco/controller";
 import { setButecoPublishing } from "renderer/buteco/publishState";
 import { clampQuality } from "renderer/buteco/quality";
+import { screenTransportOrder } from "renderer/buteco/screenTransport";
+import { waitForConnected } from "renderer/buteco/sfuUtil";
+import { getButecoWebState } from "renderer/buteco/webState";
 import { addPatch } from "renderer/patches/shared";
 import { State, useSettings, useVesktopState } from "renderer/settings";
 import { isLinux, isWindows } from "renderer/utils";
@@ -220,6 +224,9 @@ async function findVirtmicDeviceId(): Promise<string | null> {
  * picker's `submit` has resolved, so the main display-media handler is no
  * longer pending (see the armed-capture flow in `src/main/screenShare.ts`).
  */
+/** Tempo máximo esperando a mídia do MediaMTX conectar antes de tentar o outro transporte. */
+const MEDIAMTX_CONNECT_TIMEOUT_MS = 12_000;
+
 export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult<void>> {
     try {
         await stopActiveButeco();
@@ -248,6 +255,10 @@ export async function startButecoPublish(pick: ButecoPick): Promise<ButecoResult
                 return res.ok ? { ok: true, value: { sdp: res.value.sdp, streamId: "" } } : res;
             },
             unpublish: () => VesktopNative.buteco.web.unpublish() as Promise<ButecoResult<void>>,
+            // Tenta o transporte que a sala indica e, se falhar, o outro (Cloudflare ↔ MediaMTX).
+            getScreenTransports: () => screenTransportOrder(getButecoWebState().room?.screenTransport),
+            cloudflareScreen: { start: startCloudflareScreen, stop: stopCloudflareScreen },
+            waitForConnected: pc => waitForConnected(pc, MEDIAMTX_CONNECT_TIMEOUT_MS),
             getVirtmicDeviceId: findVirtmicDeviceId,
             virtmic: {
                 start: nodes => VesktopNative.virtmic.start(nodes as Node[]),

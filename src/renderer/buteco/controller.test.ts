@@ -364,6 +364,112 @@ describe("ButecoController", () => {
     });
 });
 
+describe("ButecoController transport fallback", () => {
+    const ok = async () => ({ ok: true as const, value: undefined });
+    const fail = (message: string) => async () => ({
+        ok: false as const,
+        error: { code: "sfu_unavailable" as const, message }
+    });
+
+    function setup(options: {
+        order: Array<"mediamtx" | "cloudflare">;
+        cloudflareStart?: () => Promise<any>;
+        waitForConnected?: () => Promise<boolean>;
+        publish?: ReturnType<typeof fakePublish>;
+    }) {
+        const pc = fakePC();
+        const display = fakeStream("vid1");
+        const getDisplayMedia = vi.fn(async () => display);
+        const cloudflareStart = vi.fn(options.cloudflareStart ?? ok);
+        const cloudflareStop = vi.fn(async () => {});
+        const unpublish = vi.fn(ok);
+        const publish = options.publish ?? fakePublish();
+
+        const controller = createButecoController({
+            getSession: () => session,
+            getDisplayMedia,
+            getUserMedia: async () => fakeStream("aud1"),
+            createPeerConnection: () => pc,
+            publish,
+            unpublish,
+            getScreenTransports: () => options.order,
+            cloudflareScreen: { start: cloudflareStart, stop: cloudflareStop },
+            waitForConnected: options.waitForConnected
+        });
+        return { controller, pc, display, getDisplayMedia, cloudflareStart, cloudflareStop, unpublish, publish };
+    }
+
+    it("publishes through Cloudflare first without opening a MediaMTX connection", async () => {
+        const t = setup({ order: ["cloudflare", "mediamtx"] });
+
+        expect((await t.controller.start({ ...baseOpts, mic: false })).ok).toBe(true);
+        expect(t.cloudflareStart).toHaveBeenCalledWith(t.display.tracks[0], expect.objectContaining({ height: 1080 }));
+        expect(t.publish).not.toHaveBeenCalled();
+        expect(t.pc.addTransceiver).not.toHaveBeenCalled();
+
+        await t.controller.stop();
+        expect(t.cloudflareStop).toHaveBeenCalled();
+        expect(t.unpublish).toHaveBeenCalled();
+    });
+
+    it("falls back to MediaMTX when Cloudflare fails, reusing the same capture", async () => {
+        const t = setup({ order: ["cloudflare", "mediamtx"], cloudflareStart: fail("Cloudflare fora") });
+
+        expect((await t.controller.start({ ...baseOpts, mic: false })).ok).toBe(true);
+        expect(t.getDisplayMedia).toHaveBeenCalledTimes(1);
+        expect(t.display.tracks[0].stop).not.toHaveBeenCalled();
+        expect(t.cloudflareStop).toHaveBeenCalled();
+        expect(t.publish).toHaveBeenCalledTimes(1);
+        expect(t.pc.setRemoteDescription).toHaveBeenCalledWith({ type: "answer", sdp: "v=0 answer" });
+    });
+
+    it("falls back to Cloudflare when the MediaMTX media never connects", async () => {
+        const t = setup({ order: ["mediamtx", "cloudflare"], waitForConnected: async () => false });
+
+        expect((await t.controller.start({ ...baseOpts, mic: false })).ok).toBe(true);
+        expect(t.pc.close).toHaveBeenCalled();
+        expect(t.unpublish).toHaveBeenCalled();
+        expect(t.cloudflareStart).toHaveBeenCalledTimes(1);
+        expect(t.display.tracks[0].stop).not.toHaveBeenCalled();
+
+        // O transporte que ficou ativo é o Cloudflare: parar solta a tela por ele.
+        await t.controller.stop();
+        expect(t.cloudflareStop).toHaveBeenCalled();
+    });
+
+    it("keeps MediaMTX when its media connects", async () => {
+        const t = setup({ order: ["mediamtx", "cloudflare"], waitForConnected: async () => true });
+
+        expect((await t.controller.start({ ...baseOpts, mic: false })).ok).toBe(true);
+        expect(t.cloudflareStart).not.toHaveBeenCalled();
+    });
+
+    it("reports the last error and releases the capture when every transport fails", async () => {
+        const t = setup({
+            order: ["cloudflare", "mediamtx"],
+            cloudflareStart: fail("Cloudflare fora"),
+            waitForConnected: async () => false
+        });
+
+        const res = await t.controller.start({ ...baseOpts, mic: false });
+        expect(res.ok).toBe(false);
+        if (!res.ok) expect(res.error.code).toBe("sfu_unavailable");
+        expect(t.display.tracks[0].stop).toHaveBeenCalled();
+        expect(t.unpublish).toHaveBeenCalled();
+    });
+
+    it("tries a refused MediaMTX publish and then the other transport", async () => {
+        const refused = vi.fn(async () => ({
+            ok: false as const,
+            error: { code: "screen_taken" as const, message: "ocupada" }
+        })) as any;
+        const t = setup({ order: ["mediamtx", "cloudflare"], publish: refused });
+
+        expect((await t.controller.start({ ...baseOpts, mic: false })).ok).toBe(true);
+        expect(t.cloudflareStart).toHaveBeenCalledTimes(1);
+    });
+});
+
 describe("reorderVideoCodecs", () => {
     it("keeps every codec, moving H264/VP8 and recovery codecs to the front", () => {
         const codecs = [

@@ -229,7 +229,15 @@ export function registerButecoWeb() {
 
     handle(IpcEvents.BUTECO_WEB_UNPUBLISH, async () => {
         const publish = activePublish;
-        if (!publish) return { ok: true, value: undefined };
+        if (!publish) {
+            // Sem publicação nossa, mas o servidor ainda lista a NOSSA tela (app fechado em
+            // plena transmissão): solta a vaga em vez de deixar um stream fantasma na sala.
+            const { room, status } = butecoWebStore.getState();
+            const socketId = roomSocket?.getSocketId() ?? null;
+            const stale = room?.members.some(member => member.userId === status.user?.id && member.screenId);
+            if (room && socketId && stale) return webReleaseScreen(room.roomId, socketId);
+            return { ok: true, value: undefined };
+        }
 
         // Limpa antes do round-trip: um stop re-entrante não solta duas vezes.
         activePublish = null;

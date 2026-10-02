@@ -8,7 +8,11 @@ import { findByProps, onceReady, wreq } from "@vencord/types/webpack";
 import { FluxDispatcher, UserStore } from "@vencord/types/webpack/common";
 import type { ButecoIceServer, ButecoResult } from "shared/buteco";
 
+import { getLocalScreenStream, subscribeLocalScreen } from "./cloudflareScreen";
+import { getVoiceChannel, resolveDiscordUserId as resolveBridge } from "./discordBridge";
 import { isButecoPublishing } from "./publishState";
+import { type ScreenTransport, viewTransportFor } from "./screenTransport";
+import { getRemoteStream, subscribeRemoteStreams, wantScreenFrom } from "./sfu";
 import { findRoomStream, getButecoWebState, subscribeButecoWeb } from "./webState";
 
 /**
@@ -41,6 +45,10 @@ interface Source {
     roomId: string;
     /** Já estamos dentro da sala onde essa tela está. */
     joined: boolean;
+    /** Por onde assistir: o transporte que o streamer registrou ao publicar. */
+    transport: ScreenTransport;
+    /** Id do stream de tela na sala; muda a cada nova transmissão. */
+    screenId: string | null;
     stream: any;
     participant: any;
 }
@@ -50,6 +58,8 @@ interface Desired {
     displayName: string;
     roomId: string;
     joined: boolean;
+    screenTransport?: string | null;
+    screenId?: string | null;
 }
 
 const sources = new Map<string, Source>();
@@ -68,6 +78,12 @@ let watchedUserId: string | null = null;
 /** Sala em que entramos sozinhos por causa de um Watch; saímos ao parar de assistir. */
 let autoJoinedRoomId: string | null = null;
 let lobbyRequested = false;
+/** Quem estamos puxando do SFU do Cloudflare (id do site); `null` = ninguém. */
+let cloudflareWanted: string | null = null;
+/** Há quanto tempo a nossa tela consta no servidor sem transmitirmos de verdade. */
+let ghostSince: number | null = null;
+let ghostReleased = false;
+const GHOST_RELEASE_MS = 20_000;
 /** Último tile selecionado que já tratamos (evita repetir o pedido a cada tick). */
 let lastAutoWatchId: string | null = null;
 
@@ -112,66 +128,6 @@ function note(message: string) {
     }
 };
 
-function getVoiceChannel(): { channelId: string; guildId: string | null } | null {
-    const selected = findByProps("getVoiceChannelId");
-    const channelId = selected?.getVoiceChannelId?.();
-    if (!channelId) return null;
-
-    const channelStore = findByProps("getChannel", "getDMFromUserId");
-    const guildId = channelStore?.getChannel?.(channelId)?.guild_id ?? null;
-    return { channelId, guildId };
-}
-
-/**
- * A sala do Buteco usa os ids do SITE (Better Auth), não os do Discord.
- * - Para nós mesmos: comparamos com o id do usuário logado no site.
- * - Para os outros: casamos o displayName com os membros da call (username,
- *   globalName ou nick), que é a única ponte disponível no payload. Primeiro
- *   por igualdade; depois ignorando símbolos/emoji, só se o resultado for único.
- */
-function resolveDiscordUserId(siteId: string, displayName: string): string | null {
-    const self = UserStore.getCurrentUser();
-    if (self && siteId === getButecoWebState().status.user?.id) return self.id;
-
-    const channel = getVoiceChannel();
-    if (!channel) return null;
-
-    const channelStore = findByProps("getChannel", "getDMFromUserId");
-    const voiceStates = findByProps("getVoiceStatesForChannel");
-    const channelObject = channelStore?.getChannel?.(channel.channelId);
-    const entries = (channelObject ? voiceStates?.getVoiceStatesForChannel?.(channelObject) : null) as
-        Array<{ voiceState?: { userId?: string }; nick?: string | null }> | null | undefined;
-    if (!entries?.length) return null;
-
-    const candidates = entries
-        .map(entry => {
-            const userId = entry.voiceState?.userId;
-            const user = userId ? (UserStore.getUser(userId) as any) : null;
-            return userId && user ? { userId, names: [user.username, user.globalName, entry.nick] } : null;
-        })
-        .filter((candidate): candidate is { userId: string; names: Array<string | null | undefined> } => !!candidate);
-
-    const exact = (value: string | null | undefined) => (value ?? "").trim().toLowerCase();
-    const loose = (value: string | null | undefined) => (value ?? "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
-
-    for (const [normalize, label] of [
-        [exact, "exato"],
-        [loose, "aproximado"]
-    ] as const) {
-        const target = normalize(displayName);
-        if (!target) continue;
-        const matches = candidates.filter(candidate => candidate.names.some(name => normalize(name) === target));
-        if (matches.length === 1) return matches[0].userId;
-        if (matches.length > 1) {
-            note(`nome ambíguo (${label}): "${displayName}" casa com ${matches.length} membros da call`);
-            return null;
-        }
-    }
-
-    // Quem compartilha pode simplesmente não estar nesta call: não é erro.
-    return null;
-}
-
 /**
  * Classe da coleção interna de participantes do ChannelRTCStore. Depois de cada
  * atualização o store revalida a seleção com `collection.getParticipant(id)`
@@ -204,6 +160,8 @@ function findParticipantCollection(): any {
     }
     return null;
 }
+
+const resolveDiscordUserId = (siteId: string, displayName: string) => resolveBridge(siteId, displayName, note);
 
 function emitStoreChanges() {
     try {
@@ -375,6 +333,8 @@ function addSource(discordUserId: string, desired: Desired, channelId: string, g
         displayName: desired.displayName,
         roomId: desired.roomId,
         joined: desired.joined,
+        transport: viewTransportFor(desired.screenTransport),
+        screenId: desired.screenId ?? null,
         stream,
         participant
     });
@@ -558,6 +518,48 @@ function stopPlayback() {
     pc = null;
     mediaStream = null;
     removeVideo();
+
+    if (cloudflareWanted) {
+        wantScreenFrom(cloudflareWanted, false);
+        cloudflareWanted = null;
+    }
+}
+
+function isSelfSource(source: Source): boolean {
+    return source.siteUserId === getButecoWebState().status.user?.id;
+}
+
+/** Põe o stream (ou tira) no vídeo do tile, só quando ele muda. */
+function attachScreenStream(stream: MediaStream | null) {
+    if (stream === mediaStream) return;
+    mediaStream = stream;
+    if (stream) injectVideo(stream);
+    else removeVideo();
+}
+
+/**
+ * Liga o vídeo da tela pelo transporte que o streamer registrou:
+ * - MediaMTX → WHEP (conexão própria, com retentativa limitada);
+ * - Cloudflare → `pull` no SFU; a nossa própria tela é a captura local, porque
+ *   o SFU não devolve o próprio stream.
+ */
+function ensurePlayback(source: Source) {
+    if (source.transport === "mediamtx") {
+        // Sem transmissão real nossa, um WHEP do próprio stream só dá 404.
+        if (isSelfSource(source) && !isButecoPublishing()) return;
+        if (!pc && !starting && !retryTimer && retryAttempts < MAX_RETRIES) void startPlayback(source.discordUserId);
+        return;
+    }
+
+    if (isSelfSource(source)) {
+        attachScreenStream(getLocalScreenStream());
+        return;
+    }
+    if (cloudflareWanted !== source.siteUserId) {
+        cloudflareWanted = source.siteUserId;
+        wantScreenFrom(source.siteUserId, true);
+    }
+    attachScreenStream(getRemoteStream(source.siteUserId, "screen"));
 }
 
 function leaveAutoJoinedRoom() {
@@ -582,7 +584,7 @@ async function requestWatch(source: Source) {
     cancelRetry();
 
     if (source.joined) {
-        void startPlayback(source.discordUserId);
+        ensurePlayback(source);
         return;
     }
 
@@ -717,7 +719,9 @@ function collectDesired(): Desired[] {
             siteUserId: member.userId,
             displayName: member.displayName,
             roomId: room.roomId,
-            joined: true
+            joined: true,
+            screenTransport: member.screenTransport,
+            screenId: member.screenId
         });
     }
 
@@ -773,6 +777,7 @@ function sync() {
             changed = true;
         } else {
             source.joined = desired.joined;
+            if (desired.joined) refreshSourceTransport(source, desired);
         }
     }
     if (channel) {
@@ -789,8 +794,46 @@ function sync() {
     }
     if (changed) emitStoreChanges();
 
+    releaseGhostScreen();
+
     const watched = watchedUserId ? sources.get(watchedUserId) : undefined;
-    if (watched?.joined) void startPlayback(watched.discordUserId);
+    if (watched?.joined) ensurePlayback(watched);
+}
+
+/** O streamer mudou de transporte ou começou outra transmissão: recomeça o vídeo do zero. */
+function refreshSourceTransport(source: Source, desired: Desired) {
+    const transport = viewTransportFor(desired.screenTransport);
+    const screenId = desired.screenId ?? null;
+    if (source.transport === transport && source.screenId === screenId) return;
+
+    note(`transmissão de ${source.displayName} mudou (${source.transport} → ${transport})`);
+    source.transport = transport;
+    source.screenId = screenId;
+
+    if (watchedUserId === source.discordUserId) {
+        cancelRetry();
+        stopPlayback();
+    }
+}
+
+/**
+ * Depois de um app fechado em plena transmissão o servidor segue achando que a
+ * nossa tela está no ar. Sem transmissão real por um tempo, solta a vaga.
+ */
+function releaseGhostScreen() {
+    const own = [...sources.values()].find(source => source.joined && isSelfSource(source));
+    if (!own || isButecoPublishing()) {
+        ghostSince = null;
+        ghostReleased = false;
+        return;
+    }
+
+    ghostSince ??= Date.now();
+    if (ghostReleased || Date.now() - ghostSince < GHOST_RELEASE_MS) return;
+
+    ghostReleased = true;
+    note("tela fantasma da própria conta: liberando a vaga no servidor");
+    void Promise.resolve(VesktopNative.buteco.web.unpublish()).catch(() => {});
 }
 
 onceReady.then(() => {
@@ -804,11 +847,8 @@ onceReady.then(() => {
     const keepAlive = () => {
         autoWatchSelected();
         const watched = watchedUserId ? sources.get(watchedUserId) : undefined;
-        if (watched?.joined && !pc && !retryTimer && !starting && retryAttempts < MAX_RETRIES) {
-            void startPlayback(watched.discordUserId);
-            return;
-        }
-        if (!pc || !mediaStream || !watchedUserId) return;
+        if (watched?.joined) ensurePlayback(watched);
+        if (!mediaStream || !watchedUserId) return;
 
         const target = findWatchTarget(watchedUserId);
         if (!target) {
@@ -817,6 +857,12 @@ onceReady.then(() => {
         }
         if (!video || !document.contains(video) || video.parentElement !== target.tile) injectVideo(mediaStream);
     };
+
+    // O stream do Cloudflare (ou a captura local) chega depois do pedido: encaixa assim que existir.
+    subscribeRemoteStreams((_userId, kind) => {
+        if (kind === "screen") keepAlive();
+    });
+    subscribeLocalScreen(keepAlive);
 
     const observer = new MutationObserver(keepAlive);
     observer.observe(document.body, { childList: true, subtree: true });
