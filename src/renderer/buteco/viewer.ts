@@ -4,38 +4,251 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { onceReady } from "@vencord/types/webpack";
+import { findByProps, onceReady } from "@vencord/types/webpack";
+import { UserStore } from "@vencord/types/webpack/common";
 import type { ButecoIceServer, ButecoResult } from "shared/buteco";
 
 import { findRoomStream, getButecoWebState, subscribeButecoWeb } from "./webState";
 
-const ROW_ID = "vc-buteco-stream-row";
-const BADGE_CLASS = "vc-buteco-stream-badge";
+/**
+ * Viewer "nativo": em vez de um tile próprio, injeta um participante sintético
+ * do tipo STREAM no ChannelRTCStore do Discord. A UI nativa (grade, botão
+ * Watch, player em foco, filme-strip, controles) passa a existir sozinha; o
+ * vídeo do SFU do Buteco entra por cima do container do player via WHEP.
+ *
+ * Tudo é revertido quando a transmissão some (ou a sala fecha).
+ */
 
-let pc: RTCPeerConnection | null = null;
-let activeUserId: string | null = null;
-let failedUserId: string | null = null;
-let retryTimer: ReturnType<typeof setTimeout> | null = null;
-let retryAttempts = 0;
-let row: HTMLDivElement | null = null;
-let video: HTMLVideoElement | null = null;
-let focused = false;
+const VIDEO_ID = "vc-buteco-native-video";
+
+/** Tipos de participante do Discord (`lp`): STREAM = 0, USER = 2, ACTIVITY = 3. */
+const PARTICIPANT_STREAM = 0;
 
 const RETRY_MS = 4000;
 const MAX_RETRIES = 6;
 
-/** O estado pode chegar antes do SFU registrar a tela; tenta de novo. */
+let installed = false;
+let activeUserId: string | null = null;
+let fakeStream: any = null;
+let fakeParticipant: any = null;
+let origRtc: {
+    getParticipants: any;
+    getFilteredParticipants: any;
+    getStreamParticipants: any;
+    getParticipant: any;
+} | null = null;
+let origStreams: { getActiveStreamForApplicationStream: any; getActiveStreamForStreamKey: any } | null = null;
+
+let pc: RTCPeerConnection | null = null;
+let video: HTMLVideoElement | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAttempts = 0;
+
+// Handle de diagnóstico: __butecoViewer.pc.getStats()
+(globalThis as any).__butecoViewer = {
+    get pc() {
+        return pc;
+    },
+    get video() {
+        return video;
+    },
+    get installed() {
+        return installed;
+    }
+};
+
+function getVoiceChannel(): { channelId: string; guildId: string | null } | null {
+    const selected = findByProps("getVoiceChannelId");
+    const channelId = selected?.getVoiceChannelId?.();
+    if (!channelId) return null;
+
+    const channelStore = findByProps("getChannel", "getDMFromUserId");
+    const guildId = channelStore?.getChannel?.(channelId)?.guild_id ?? null;
+    return { channelId, guildId };
+}
+
+/** Instala o stream/participante falso e patcha os stores. */
+function install(userId: string, displayName: string, channelId: string, guildId: string | null): boolean {
+    if (installed && activeUserId === userId) return true;
+
+    const rtc = findByProps("getStreamParticipants");
+    const streams = findByProps("getStreamForUser");
+    const voiceStates = findByProps("getVoiceState");
+    if (!rtc || !streams) return false;
+
+    const user = UserStore.getUser(userId) ?? UserStore.getCurrentUser();
+    const streamKey = `${channelId}:${userId}`;
+
+    fakeStream = {
+        streamKey,
+        channelId,
+        guildId,
+        ownerId: userId,
+        rtcServerId: "0",
+        rtcRegion: "brazil",
+        viewerIds: [],
+        paused: false,
+        state: "CONNECTING",
+        streamType: "guild",
+        isGuildStream: true,
+        isScreenshare: true,
+        previewURL: null,
+        getMediaEngineConnectionId: () => "buteco-native"
+    };
+
+    fakeParticipant = {
+        type: PARTICIPANT_STREAM,
+        id: streamKey,
+        user,
+        userNick: displayName,
+        voiceState: voiceStates?.getVoiceState?.(guildId, userId),
+        speaking: false,
+        soundsharing: false,
+        ringing: false,
+        localVideoDisabled: false,
+        isPoppedOut: false,
+        stream: fakeStream
+    };
+
+    if (!origRtc) {
+        origRtc = {
+            getParticipants: rtc.getParticipants,
+            getFilteredParticipants: rtc.getFilteredParticipants,
+            getStreamParticipants: rtc.getStreamParticipants,
+            getParticipant: rtc.getParticipant
+        };
+        const originals = origRtc;
+        const inject = (list: any[] | undefined) => {
+            if (!fakeParticipant) return list ?? [];
+            const items = list ?? [];
+            return items.some(item => item.id === fakeParticipant.id) ? items : [...items, fakeParticipant];
+        };
+        const isOurChannel = (channelId: string) => channelId === fakeParticipant?.stream?.channelId;
+
+        rtc.getParticipants = function (channelId: string) {
+            const real = originals.getParticipants.call(this, channelId);
+            return isOurChannel(channelId) ? inject(real) : real;
+        };
+        rtc.getFilteredParticipants = function (channelId: string) {
+            const real = originals.getFilteredParticipants.call(this, channelId);
+            return isOurChannel(channelId) ? inject(real) : real;
+        };
+        rtc.getStreamParticipants = function (channelId: string) {
+            const real = originals.getStreamParticipants.call(this, channelId);
+            return isOurChannel(channelId) ? inject(real) : real;
+        };
+        rtc.getParticipant = function (channelId: string, id: string) {
+            if (fakeParticipant && id === fakeParticipant.id) return fakeParticipant;
+            return originals.getParticipant.call(this, channelId, id);
+        };
+    }
+
+    if (!origStreams) {
+        origStreams = {
+            getActiveStreamForApplicationStream: streams.getActiveStreamForApplicationStream,
+            getActiveStreamForStreamKey: streams.getActiveStreamForStreamKey
+        };
+        const originals = origStreams;
+        streams.getActiveStreamForApplicationStream = function (stream: any) {
+            if (stream === fakeStream) return fakeStream;
+            return originals.getActiveStreamForApplicationStream.call(this, stream);
+        };
+        streams.getActiveStreamForStreamKey = function (key: string) {
+            if (fakeStream && key === fakeStream.streamKey) return fakeStream;
+            return originals.getActiveStreamForStreamKey.call(this, key);
+        };
+    }
+
+    activeUserId = userId;
+    installed = true;
+    try {
+        rtc.emitChange?.();
+        streams.emitChange?.();
+    } catch {
+        // um subscriber quebrado não deve impedir a injeção
+    }
+    return true;
+}
+
+function uninstall() {
+    const rtc = findByProps("getStreamParticipants");
+    const streams = findByProps("getStreamForUser");
+
+    if (rtc && origRtc) {
+        rtc.getParticipants = origRtc.getParticipants;
+        rtc.getFilteredParticipants = origRtc.getFilteredParticipants;
+        rtc.getStreamParticipants = origRtc.getStreamParticipants;
+        rtc.getParticipant = origRtc.getParticipant;
+    }
+    if (streams && origStreams) {
+        streams.getActiveStreamForApplicationStream = origStreams.getActiveStreamForApplicationStream;
+        streams.getActiveStreamForStreamKey = origStreams.getActiveStreamForStreamKey;
+    }
+
+    origRtc = null;
+    origStreams = null;
+    fakeStream = null;
+    fakeParticipant = null;
+    activeUserId = null;
+    installed = false;
+
+    try {
+        rtc?.emitChange?.();
+        streams?.emitChange?.();
+    } catch {
+        // idem
+    }
+}
+
+/** Container do player em foco (a área grande da call). */
+function findPlayerContainer(): HTMLElement | null {
+    const candidates = [...document.querySelectorAll<HTMLElement>('[class*="layerContainer"]')].filter(element => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 600 && rect.height > 300;
+    });
+    return candidates[0] ?? null;
+}
+
+function removeVideo() {
+    video?.remove();
+    video = null;
+}
+
+function injectVideo(stream: MediaStream) {
+    const container = findPlayerContainer();
+    if (!container) return;
+
+    if (video && document.contains(video) && video.parentElement === container) {
+        if (video.srcObject !== stream) video.srcObject = stream;
+        return;
+    }
+
+    removeVideo();
+    video = document.createElement("video");
+    video.id = VIDEO_ID;
+    video.autoplay = true;
+    video.playsInline = true;
+    video.style.cssText =
+        "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:5;";
+    container.style.position = "relative";
+    container.appendChild(video);
+
+    video.srcObject = stream;
+    void video.play().catch(() => {
+        if (!video) return;
+        video.muted = true;
+        void video.play().catch(() => {});
+    });
+}
+
 function scheduleRetry(userId: string) {
     if (retryTimer || retryAttempts >= MAX_RETRIES) return;
-
     retryTimer = setTimeout(
         () => {
             retryTimer = null;
             const member = findRoomStream(getButecoWebState().room);
             if (member?.userId !== userId) return;
-
             retryAttempts++;
-            failedUserId = null;
             sync();
         },
         RETRY_MS * (retryAttempts + 1)
@@ -48,151 +261,13 @@ function cancelRetry() {
     retryAttempts = 0;
 }
 
-// Handle de diagnóstico (console/CDP): __butecoViewer.pc.getStats().
-(globalThis as any).__butecoViewer = {
-    get pc() {
-        return pc;
-    },
-    get video() {
-        return video;
-    }
-};
-
-function removeTile() {
-    row?.remove();
-    row = null;
-    video = null;
-}
-
-/** A grade da call vive sob um scroller com "videoGrid"; as linhas, em "listItems". */
-function findCallGrid(): HTMLElement | null {
-    return (
-        document.querySelector<HTMLElement>('[class*="videoGrid"] [class*="listItems"]') ??
-        document.querySelector<HTMLElement>('[class*="videoGrid"]')
-    );
-}
-
-/** Mede um tile nativo do Discord para o nosso ter o mesmo tamanho. */
-function nativeTileSize(): { width?: number; height?: number } {
-    const native = document.querySelector<HTMLElement>('[class*="tileSizer"]');
-    const rect = native?.getBoundingClientRect();
-    if (rect && rect.width > 0 && rect.height > 0) {
-        return { width: Math.round(rect.width), height: Math.round(rect.height) };
-    }
-    return {};
-}
-
-function applyFocus() {
-    if (!row || !video) return;
-    const tile = video.parentElement as HTMLDivElement | null;
-    if (!tile) return;
-
-    if (focused) {
-        // Cobre a área da call (não mexe na grade do Discord).
-        const area =
-            document.querySelector<HTMLElement>('[class*="videoControls"]') ??
-            document.querySelector<HTMLElement>('[class*="callContainer"]');
-        const rect = area?.getBoundingClientRect();
-        const left = rect ? rect.left : 326;
-        const top = rect ? rect.top : 32;
-        const width = rect ? rect.width : window.innerWidth - 326;
-        const height = rect ? rect.height : window.innerHeight - 32;
-
-        row.style.cssText =
-            `position:fixed;left:${left}px;top:${top}px;width:${width}px;height:${height}px;z-index:120;` +
-            "display:flex;align-items:center;justify-content:center;padding:8px;box-sizing:border-box;";
-        tile.style.cssText =
-            "position:relative;width:100%;height:100%;max-width:none;aspect-ratio:auto;background:#000;" +
-            "border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.06) inset;";
-        return;
-    }
-
-    const size = nativeTileSize();
-    row.style.cssText = "width:100%;display:flex;justify-content:center;padding:2px 0;box-sizing:border-box;";
-    tile.style.cssText =
-        "position:relative;background:#000;border-radius:8px;overflow:hidden;" +
-        "box-shadow:0 0 0 1px rgba(255,255,255,.06) inset;" +
-        (size.width && size.height
-            ? `width:${size.width}px;height:${size.height}px;`
-            : "width:100%;max-width:1200px;aspect-ratio:16/9;");
-}
-
-function ensureTile(name: string): HTMLVideoElement | null {
-    if (video && row && document.contains(row)) {
-        const badge = row.querySelector<HTMLElement>(`.${BADGE_CLASS}`);
-        if (badge) badge.textContent = `Buteco Games · ${name}`;
-        return video;
-    }
-
-    removeTile();
-
-    const grid = findCallGrid();
-    if (!grid) return null;
-
-    row = document.createElement("div");
-    row.id = ROW_ID;
-
-    const tile = document.createElement("div");
-    tile.id = "vc-buteco-stream-tile";
-    tile.title = "Clique para maximizar / restaurar";
-    tile.style.cursor = "pointer";
-
-    video = document.createElement("video");
-    video.autoplay = true;
-    video.playsInline = true;
-    video.style.cssText = "width:100%;height:100%;object-fit:contain;background:#000;";
-
-    const badge = document.createElement("div");
-    badge.className = BADGE_CLASS;
-    badge.textContent = `Buteco Games · ${name}`;
-    badge.style.cssText =
-        "position:absolute;left:8px;top:8px;padding:2px 8px;border-radius:999px;" +
-        "background:rgba(0,0,0,.65);color:#fff;font-size:12px;font-weight:600;pointer-events:none;";
-
-    const mute = document.createElement("button");
-    mute.id = "vc-buteco-stream-mute";
-    mute.type = "button";
-    mute.textContent = video.muted ? "🔇" : "🔊";
-    mute.title = "Alternar áudio";
-    mute.style.cssText =
-        "position:absolute;right:8px;top:8px;width:28px;height:28px;border-radius:6px;border:none;" +
-        "background:rgba(0,0,0,.65);color:#fff;cursor:pointer;font-size:14px;line-height:1;";
-    mute.addEventListener("click", event => {
-        event.stopPropagation();
-        if (!video) return;
-        video.muted = !video.muted;
-        mute.textContent = video.muted ? "🔇" : "🔊";
-    });
-
-    tile.addEventListener("click", () => {
-        focused = !focused;
-        applyFocus();
-    });
-
-    tile.append(video, badge, mute);
-    row.append(tile);
-    grid.prepend(row);
-    applyFocus();
-
-    return video;
-}
-
-function stopWatching() {
-    pc?.close();
-    pc = null;
-    activeUserId = null;
-    focused = false;
-    removeTile();
-}
-
-async function startWatching(userId: string, name: string) {
-    stopWatching();
-    activeUserId = userId;
+async function startPlayback(userId: string) {
+    if (pc) return;
+    const channel = getVoiceChannel();
+    if (!channel) return;
 
     const ice = (await VesktopNative.buteco.web.ice()) as ButecoResult<ButecoIceServer[]>;
     if (!ice.ok || activeUserId !== userId) {
-        activeUserId = null;
-        failedUserId = userId;
         scheduleRetry(userId);
         return;
     }
@@ -201,7 +276,6 @@ async function startWatching(userId: string, name: string) {
     pc = connection;
     const stream = new MediaStream();
 
-    // H264/VP8 primeiro: decode mais leve que VP9/AV1 (evita frame drops).
     const videoTransceiver = connection.addTransceiver("video", { direction: "recvonly" });
     const codecs = RTCRtpSender.getCapabilities?.("video")?.codecs;
     if (codecs?.length && videoTransceiver.setCodecPreferences) {
@@ -212,23 +286,12 @@ async function startWatching(userId: string, name: string) {
 
     connection.ontrack = event => {
         stream.addTrack(event.track);
-        const el = ensureTile(name);
-        if (!el) return;
-
-        el.srcObject = stream;
-        void el.play().catch(() => {
-            // Autoplay com áudio pode ser bloqueado; cai para mudo e tenta de novo.
-            el.muted = true;
-            const mute = el.parentElement?.querySelector<HTMLButtonElement>("#vc-buteco-stream-mute");
-            if (mute) mute.textContent = "🔇";
-            void el.play().catch(() => {});
-        });
+        injectVideo(stream);
     };
 
     connection.onconnectionstatechange = () => {
         if (connection.connectionState === "failed") {
-            failedUserId = userId;
-            stopWatching();
+            stopPlayback();
             scheduleRetry(userId);
         }
     };
@@ -237,7 +300,7 @@ async function startWatching(userId: string, name: string) {
     await connection.setLocalDescription(offer);
     const sdp = connection.localDescription?.sdp;
     if (!sdp || pc !== connection) {
-        stopWatching();
+        stopPlayback();
         scheduleRetry(userId);
         return;
     }
@@ -245,8 +308,7 @@ async function startWatching(userId: string, name: string) {
     const answer = (await VesktopNative.buteco.web.whep(sdp)) as ButecoResult<{ sdp: string }>;
     if (pc !== connection) return;
     if (!answer.ok || !answer.value?.sdp) {
-        failedUserId = userId;
-        stopWatching();
+        stopPlayback();
         scheduleRetry(userId);
         return;
     }
@@ -255,48 +317,73 @@ async function startWatching(userId: string, name: string) {
     cancelRetry();
 }
 
+function stopPlayback() {
+    pc?.close();
+    pc = null;
+    removeVideo();
+}
+
+/**
+ * Para o próprio streamer o Discord não abre o player pelo botão Watch (o tile
+ * é tratado como "seu stream", com menu de Stop/Change). Interceptamos o clique
+ * nesse botão do NOSSO tile e chamamos a ação nativa de seleção — o player
+ * nativo abre normalmente.
+ */
+function handleWatchClick(event: MouseEvent) {
+    if (!installed || !fakeParticipant) return;
+
+    const target = event.target as HTMLElement | null;
+    const button = target?.closest("button, [role=button]");
+    if (!button || !/watch/i.test(button.textContent || "")) return;
+
+    const tile = button.closest('[class*="tile_"]');
+    if (!tile || !(tile.textContent || "").includes(fakeParticipant.userNick)) return;
+
+    const channel = getVoiceChannel();
+    const actions = findByProps("selectParticipant");
+    if (!channel || !actions?.selectParticipant) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+        actions.selectParticipant(channel.channelId, fakeParticipant.id);
+    } catch {
+        // se a ação falhar, deixa o clique nativo seguir
+    }
+}
+
 function sync() {
     const member = findRoomStream(getButecoWebState().room);
+    const channel = getVoiceChannel();
 
-    if (!member) {
+    if (!member || !channel) {
         cancelRetry();
-        failedUserId = null;
-        if (activeUserId) stopWatching();
-        else removeTile();
+        if (installed) uninstall();
+        stopPlayback();
         return;
     }
 
-    if (member.userId === failedUserId) return;
-    if (member.userId === activeUserId) {
-        // React pode ter derrubado a grade; recoloca o tile.
-        if (!row || !document.contains(row)) ensureTile(member.displayName);
-        return;
+    if (!installed || activeUserId !== member.userId) {
+        if (installed) uninstall();
+        if (!install(member.userId, member.displayName, channel.channelId, channel.guildId)) return;
     }
 
-    void startWatching(member.userId, member.displayName);
+    void startPlayback(member.userId);
 }
 
 onceReady.then(() => {
     subscribeButecoWeb(sync);
+    document.addEventListener("click", handleWatchClick, true);
 
-    // O React re-renderiza a grade com frequência; se nosso tile sumir, volta.
+    // O React troca o container do player; se nosso vídeo sumir, volta.
     const observer = new MutationObserver(() => {
-        if (!pc || !activeUserId) return;
-        if (!row || !document.contains(row)) {
-            ensureTile(findRoomStream(getButecoWebState().room)?.displayName ?? "Buteco");
+        if (!pc) return;
+        if (!video || !document.contains(video)) {
+            const stream = (video?.srcObject as MediaStream | null) ?? null;
+            if (stream) injectVideo(stream);
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
-
-    window.addEventListener("resize", () => {
-        if (focused) applyFocus();
-    });
-
-    // A grade do Discord muda de tamanho sozinha (entra/sai gente, resize);
-    // reaplica o tamanho nativo periodicamente enquanto não estamos focados.
-    setInterval(() => {
-        if (!focused && row && document.contains(row)) applyFocus();
-    }, 1500);
 
     sync();
 });
