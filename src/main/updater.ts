@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { autoUpdater, UpdateInfo } from "electron-updater";
 import { join } from "path";
 import { IpcEvents, UpdaterIpcEvents } from "shared/IpcEvents";
@@ -14,6 +14,9 @@ import { State } from "./settings";
 import { handle } from "./utils/ipcWrappers";
 import { makeLinksOpenExternally } from "./utils/makeLinksOpenExternally";
 import { loadView } from "./vesktopStatic";
+
+/** Releases do fork; o macOS sem assinatura da Apple atualiza baixando de lá. */
+const RELEASES_URL = "https://github.com/astahjmo/Vesktop/releases";
 
 let updaterWindow: BrowserWindow | null = null;
 
@@ -34,11 +37,15 @@ autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
 autoUpdater.fullChangelog = true;
 
-const isOutdated = autoUpdater.checkForUpdates().then(res => Boolean(res?.isUpdateAvailable));
+// Sem rede ou sem Release publicado a checagem falha (404): vira "não desatualizado" em vez de rejeição solta.
+const isOutdated = autoUpdater
+    .checkForUpdates()
+    .then(res => Boolean(res?.isUpdateAvailable))
+    .catch(() => false);
 
 handle(IpcEvents.UPDATER_IS_OUTDATED, () => isOutdated);
 handle(IpcEvents.UPDATER_OPEN, async () => {
-    const res = await autoUpdater.checkForUpdates();
+    const res = await autoUpdater.checkForUpdates().catch(() => null);
     if (res?.isUpdateAvailable && res.updateInfo) openUpdater(res.updateInfo);
 });
 
@@ -56,6 +63,13 @@ function openUpdater(update: UpdateInfo) {
 
     handle(UpdaterIpcEvents.GET_DATA, () => ({ update, version: app.getVersion() }));
     handle(UpdaterIpcEvents.INSTALL, async () => {
+        // O Squirrel.Mac recusa atualizações sem assinatura de desenvolvedor: no macOS
+        // sem certificado, abre a página do Release para baixar a versão nova.
+        if (process.platform === "darwin") {
+            await shell.openExternal(`${RELEASES_URL}/tag/v${update.version}`);
+            updaterWindow?.close();
+            return;
+        }
         await autoUpdater.downloadUpdate();
     });
     handle(UpdaterIpcEvents.SNOOZE_UPDATE, () => {
