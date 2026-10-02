@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import "./autoRoomRelease";
+
 import {
     closeModal,
     ContextMenuApi,
@@ -26,6 +28,7 @@ import type { ButecoError } from "shared/buteco";
 import { ButecoPanel } from "./ButecoPanel";
 import { disableButecoCamera, enableButecoCamera, useButecoCameraState } from "./cameraSession";
 import { useButecoPublishing } from "./publishState";
+import { ensureButecoRoom, leaveAutoCreatedRoom } from "./room";
 import { useButecoWebState } from "./useButecoWeb";
 
 /** Cervejinha: ícone do Buteco Games. */
@@ -219,7 +222,7 @@ export function ButecoCameraButton() {
             style={{ ...props.style, opacity: camera.busy ? 0.6 : 1, cursor: camera.busy ? "progress" : "pointer" }}
             onClick={() => {
                 if (camera.enabled) void disableButecoCamera();
-                else if (!web.status.loggedIn || !web.room) openButecoModal();
+                else if (!web.status.loggedIn) openButecoModal();
                 else void enableButecoCamera();
             }}
         >
@@ -259,9 +262,19 @@ function ButecoModal({ modalProps }: { modalProps: any }) {
 
     async function onStart() {
         if (!pick) return;
+
+        // Sem sala aberta, cria uma com nome aleatório e sem senha.
+        const room = await ensureButecoRoom({ exclusive: true });
+        if (!room.ok) {
+            setError(room.error);
+            return;
+        }
+
         const res = await startButecoPublish(pick);
         if (!res.ok) {
             setError(res.error);
+            // A sala nasceu só para esta transmissão: não deixa uma mesa vazia aberta.
+            void leaveAutoCreatedRoom();
         } else {
             setLatestButecoError(null);
             modalProps.onClose();

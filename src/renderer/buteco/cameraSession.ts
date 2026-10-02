@@ -8,6 +8,7 @@ import { useEffect, useState } from "@vencord/types/webpack/common";
 import type { ButecoIceServer, ButecoResult } from "shared/buteco";
 import type { ButecoRoomQuality, ButecoRoomState } from "shared/butecoWeb";
 
+import { ensureButecoRoom } from "./room";
 import { getButecoWebState, subscribeButecoWeb } from "./webState";
 
 /**
@@ -363,6 +364,7 @@ async function captureCamera(room: ButecoRoomState): Promise<MediaStream> {
 
 function failureMessage(error: unknown): string {
     const reason = (error as CameraError)?.reason;
+    if (reason === "room") return (error as CameraError).message;
     if (reason && MESSAGES[reason]) return MESSAGES[reason];
     note(`falha: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
     return MESSAGES.generic;
@@ -377,6 +379,9 @@ export function enableButecoCamera(): Promise<void> {
         let current: CameraSession | null = null;
         let serverNotified = false;
         try {
+            const roomReady = await ensureButecoRoom();
+            if (!roomReady.ok) throw new CameraError(roomReady.error.message, "room");
+
             current = await ensureSession();
             const { room } = getButecoWebState();
             if (!room) throw new CameraError(MESSAGES.generic, "generic");

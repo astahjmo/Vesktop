@@ -6,16 +6,15 @@
 
 import { Button, Heading, HeadingTertiary, Paragraph } from "@vencord/types/components";
 import { useAwaiter, useForceUpdater } from "@vencord/types/utils";
-import { useEffect, useState } from "@vencord/types/webpack/common";
+import { useState } from "@vencord/types/webpack/common";
 import type { Node } from "@vencord/venmic";
 import type { ButecoWireSession } from "main/buteco/store";
 import type { ButecoPick } from "renderer/components/ScreenSharePicker";
 import { useSettings } from "renderer/settings";
 import { isLinux } from "renderer/utils";
 import type { ButecoError, ButecoSource } from "shared/buteco";
-import type { ButecoRoomState, ButecoRoomSummary } from "shared/butecoWeb";
+import type { ButecoRoomState } from "shared/butecoWeb";
 
-import { disableButecoCamera, enableButecoCamera, useButecoCameraState } from "./cameraSession";
 import { BUTECO_ERROR_MESSAGES } from "./messages";
 import { BUTECO_FPS, BUTECO_HEIGHTS, clampFps, clampHeight } from "./quality";
 import { useButecoWebState } from "./useButecoWeb";
@@ -89,26 +88,31 @@ export function ButecoPanel({
 }) {
     const web = useButecoWebState();
 
+    // A lista de fontes não depende de sala: a sala nasce ao iniciar.
     const [sources] = useAwaiter<ButecoSource[]>(
-        () => (web.room ? VesktopNative.buteco.listSources() : Promise.resolve([])),
-        { fallbackValue: [], deps: [web.room?.roomId] }
+        () => (web.status.loggedIn ? VesktopNative.buteco.listSources() : Promise.resolve([])),
+        { fallbackValue: [], deps: [web.status.loggedIn] }
     );
 
     if (!web.status.loggedIn) return <ButecoLogin />;
-    if (!web.room)
-        return (
-            <ButecoRooms
-                lobby={web.lobby}
-                joinError={web.joinError}
-                displayName={web.status.user?.displayName ?? null}
-            />
-        );
 
     return (
         <div>
-            <ButecoRoomHeader room={web.room} />
-            <ButecoCameraToggle />
-            {error ? <Paragraph>{BUTECO_ERROR_MESSAGES[error.code]}</Paragraph> : null}
+            {web.room ? (
+                <ButecoRoomHeader room={web.room} />
+            ) : (
+                <Paragraph>
+                    Conectado como {web.status.user?.displayName ?? "—"}. Ao iniciar, uma sala com nome aleatório e sem
+                    senha é criada para você.
+                </Paragraph>
+            )}
+            {error ? (
+                <Paragraph>
+                    {error.code === "network" && error.message && !error.message.startsWith("HTTP")
+                        ? error.message
+                        : BUTECO_ERROR_MESSAGES[error.code]}
+                </Paragraph>
+            ) : null}
             <HeadingTertiary>Fonte</HeadingTertiary>
             <div>
                 {sources.map(s => (
@@ -166,112 +170,6 @@ function ButecoLogin() {
             >
                 {busy ? "Abrindo login..." : "Entrar"}
             </Button>
-        </div>
-    );
-}
-
-function ButecoRooms({
-    lobby,
-    joinError,
-    displayName
-}: {
-    lobby: ButecoRoomSummary[] | null;
-    joinError: string | null;
-    displayName: string | null;
-}) {
-    const [passwordFor, setPasswordFor] = useState<string | null>(null);
-    const [password, setPassword] = useState("");
-    const [creating, setCreating] = useState(false);
-    const [name, setName] = useState("");
-    const [newPassword, setNewPassword] = useState("");
-
-    useEffect(() => {
-        void VesktopNative.buteco.web.lobby();
-    }, []);
-
-    return (
-        <div>
-            {displayName ? <Paragraph>Conectado como {displayName}</Paragraph> : null}
-            <HeadingTertiary>Salas abertas</HeadingTertiary>
-            {joinError ? <Paragraph>{joinError}</Paragraph> : null}
-            {lobby === null ? (
-                <Paragraph>Carregando salas...</Paragraph>
-            ) : lobby.length === 0 ? (
-                <Paragraph>Nenhuma sala aberta agora.</Paragraph>
-            ) : (
-                lobby.map(room => (
-                    <div key={room.roomId}>
-                        <span>
-                            {room.name} · {room.memberCount} na sala {room.hasPassword ? "🔒" : ""}
-                        </span>
-                        {passwordFor === room.roomId ? (
-                            <>
-                                <input
-                                    type="password"
-                                    value={password}
-                                    placeholder="Senha"
-                                    onChange={e => setPassword(e.currentTarget.value)}
-                                />
-                                <Button onClick={() => void VesktopNative.buteco.web.joinRoom(room.roomId, password)}>
-                                    Entrar
-                                </Button>
-                            </>
-                        ) : (
-                            <Button
-                                onClick={() => {
-                                    if (room.hasPassword) {
-                                        setPasswordFor(room.roomId);
-                                        setPassword("");
-                                        return;
-                                    }
-                                    void VesktopNative.buteco.web.joinRoom(room.roomId);
-                                }}
-                            >
-                                Entrar
-                            </Button>
-                        )}
-                    </div>
-                ))
-            )}
-
-            <HeadingTertiary>Criar sala</HeadingTertiary>
-            {creating ? (
-                <>
-                    <input value={name} placeholder="Nome da sala" onChange={e => setName(e.currentTarget.value)} />
-                    <input
-                        value={newPassword}
-                        placeholder="Senha (opcional)"
-                        onChange={e => setNewPassword(e.currentTarget.value)}
-                    />
-                    <Button
-                        disabled={!name}
-                        onClick={() => void VesktopNative.buteco.web.createRoom(name, newPassword)}
-                    >
-                        Criar
-                    </Button>
-                </>
-            ) : (
-                <Button variant="secondary" onClick={() => setCreating(true)}>
-                    Criar sala
-                </Button>
-            )}
-        </div>
-    );
-}
-
-function ButecoCameraToggle() {
-    const camera = useButecoCameraState();
-
-    return (
-        <div>
-            <Button
-                variant="secondary"
-                disabled={camera.busy}
-                onClick={() => void (camera.enabled ? disableButecoCamera() : enableButecoCamera())}
-            >
-                {camera.busy ? "Aguarde..." : camera.enabled ? "Desligar câmera" : "Ligar câmera"}
-            </Button>
-            {camera.error ? <Paragraph>{camera.error}</Paragraph> : null}
         </div>
     );
 }

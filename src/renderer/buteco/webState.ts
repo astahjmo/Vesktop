@@ -45,3 +45,8 @@ export function subscribeButecoWeb(listener: () => void): () => void {
         listeners.delete(listener);
     };
 }
+
+/** Tempo máximo esperando o servidor confirmar a abertura de uma sala. */
+export function applyRoomOpenTimeoutMs(): number {
+    return 8000;
+}
