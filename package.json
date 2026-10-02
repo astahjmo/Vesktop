@@ -160,7 +160,8 @@
                 "CFBundleIconName": "Icon"
             },
             "notarize": false,
-            "identity": null
+            "identity": "-",
+            "hardenedRuntime": false
         },
         "dmg": {
             "background": "build/background.tiff",
