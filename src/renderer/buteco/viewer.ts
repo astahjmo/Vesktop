@@ -13,6 +13,7 @@ import { getVoiceChannel, resolveDiscordUserId as resolveBridge } from "./discor
 import { isButecoPublishing } from "./publishState";
 import { type ScreenTransport, viewTransportFor } from "./screenTransport";
 import { getRemoteStream, subscribeRemoteStreams, wantScreenFrom } from "./sfu";
+import { discordStreamKey } from "./streamKey";
 import { findRoomStream, getButecoWebState, subscribeButecoWeb } from "./webState";
 
 /**
@@ -72,6 +73,7 @@ let origRtc: {
 } | null = null;
 let origStreams: { getActiveStreamForApplicationStream: any; getActiveStreamForStreamKey: any } | null = null;
 let origCollectionGetParticipant: { collection: any; original: any } | null = null;
+let origPreview: { shouldFetchPreview: any } | null = null;
 
 /** Quem o usuário está assistindo (clicou em Watch). */
 let watchedUserId: string | null = null;
@@ -234,6 +236,18 @@ function ensurePatched(): boolean {
         };
     }
 
+    // O gancho de prévia do tile faria `GET /streams/<chave>/preview` na API do Discord para um
+    // stream que só existe aqui (404 a cada ~15 s). Para as nossas chaves, não há o que buscar.
+    const preview = findByProps("shouldFetchPreview", "getPreviewURL", "getIsPreviewLoading");
+    if (preview && !origPreview) {
+        origPreview = { shouldFetchPreview: preview.shouldFetchPreview };
+        const original = origPreview.shouldFetchPreview;
+        preview.shouldFetchPreview = function (guildId: string | null, channelId: string, ownerId: string) {
+            if (sourceByStreamKey(discordStreamKey(guildId, channelId, ownerId))) return false;
+            return original.call(this, guildId, channelId, ownerId);
+        };
+    }
+
     if (!origCollectionGetParticipant) {
         const collection = findParticipantCollection();
         if (collection) {
@@ -268,6 +282,10 @@ function unpatch() {
         streams.getActiveStreamForApplicationStream = origStreams.getActiveStreamForApplicationStream;
         streams.getActiveStreamForStreamKey = origStreams.getActiveStreamForStreamKey;
     }
+    const preview = findByProps("shouldFetchPreview", "getPreviewURL", "getIsPreviewLoading");
+    if (preview && origPreview) preview.shouldFetchPreview = origPreview.shouldFetchPreview;
+    origPreview = null;
+
     origRtc = null;
     origStreams = null;
 }
@@ -293,7 +311,7 @@ function addSource(discordUserId: string, desired: Desired, channelId: string, g
 
     // O Discord parseia a chave: `guild:<guildId>:<channelId>:<ownerId>` ou
     // `call:<channelId>:<ownerId>` (DM). Outro formato quebra o player nativo.
-    const streamKey = guildId ? `guild:${guildId}:${channelId}:${discordUserId}` : `call:${channelId}:${discordUserId}`;
+    const streamKey = discordStreamKey(guildId, channelId, discordUserId);
 
     const stream = {
         streamKey,
@@ -707,6 +725,31 @@ function handleStreamStop(event: { streamKey?: string }) {
     if (watchedUserId === source.discordUserId) stopWatching();
 }
 
+/**
+ * O Discord reage a STREAM_STOP/STREAM_CLOSE avisando o gateway (`STREAM_DELETE`) com a
+ * chave do stream. Para um stream que só existe aqui isso seria um aviso sobre algo que
+ * nunca existiu no servidor deles: tratamos o stop nós mesmos e cancelamos a ação antes
+ * de qualquer handler do Discord. Interceptadores não podem ser removidos, então este fica
+ * instalado e só age sobre as nossas chaves.
+ */
+function installStreamStopInterceptor() {
+    const dispatcher = FluxDispatcher as any;
+    const isStop = (type: unknown) => type === "STREAM_STOP" || type === "STREAM_CLOSE";
+
+    if (typeof dispatcher.addInterceptor === "function") {
+        dispatcher.addInterceptor((event: { type?: string; streamKey?: string }) => {
+            if (!isStop(event?.type) || !event.streamKey || !sourceByStreamKey(event.streamKey)) return false;
+            handleStreamStop(event);
+            return true;
+        });
+        return;
+    }
+
+    // Sem interceptador (versão futura do Discord): ao menos reage ao stop.
+    FluxDispatcher.subscribe("STREAM_STOP", handleStreamStop);
+    FluxDispatcher.subscribe("STREAM_CLOSE", handleStreamStop);
+}
+
 /** Quem está compartilhando agora: a sala em que estamos + salas abertas do lobby. */
 function collectDesired(): Desired[] {
     const state = getButecoWebState();
@@ -788,7 +831,7 @@ function sync() {
     }
 
     if (!sources.size) {
-        if (origRtc || origStreams || origCollectionGetParticipant) unpatch();
+        if (origRtc || origStreams || origCollectionGetParticipant || origPreview) unpatch();
         cancelRetry();
         stopPlayback();
     }
@@ -839,8 +882,7 @@ function releaseGhostScreen() {
 onceReady.then(() => {
     subscribeButecoWeb(sync);
     document.addEventListener("click", handleWatchClick, true);
-    FluxDispatcher.subscribe("STREAM_STOP", handleStreamStop);
-    FluxDispatcher.subscribe("STREAM_CLOSE", handleStreamStop);
+    installStreamStopInterceptor();
 
     // O React remonta os tiles a cada mudança de layout; mantém o vídeo no
     // tile focado enquanto a conexão existir.
