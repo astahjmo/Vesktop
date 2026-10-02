@@ -45,9 +45,19 @@ let mediaStream: MediaStream | null = null;
 let video: HTMLVideoElement | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempts = 0;
+let starting = false;
+const debugLog: string[] = [];
+
+function note(message: string) {
+    debugLog.push(`${new Date().toISOString().slice(11, 23)} ${message}`);
+    if (debugLog.length > 40) debugLog.shift();
+}
 
 // Handle de diagnóstico: __butecoViewer.pc.getStats()
 (globalThis as any).__butecoViewer = {
+    get log() {
+        return debugLog;
+    },
     get pc() {
         return pc;
     },
@@ -381,12 +391,28 @@ function cancelRetry() {
 }
 
 async function startPlayback(userId: string) {
+    if (starting) return;
+    starting = true;
+    try {
+        await startPlaybackUnsafe(userId);
+    } catch (error) {
+        note(`startPlayback erro: ${String((error as Error)?.stack ?? error).slice(0, 300)}`);
+        stopPlayback();
+        scheduleRetry(userId);
+    } finally {
+        starting = false;
+    }
+}
+
+async function startPlaybackUnsafe(userId: string) {
     if (pc) return;
+    note("startPlayback");
     const channel = getVoiceChannel();
     if (!channel) return;
 
     const ice = (await VesktopNative.buteco.web.ice()) as ButecoResult<ButecoIceServer[]>;
     if (!ice.ok || activeUserId !== userId) {
+        note(`ice falhou/usuário mudou (ok=${ice.ok}, ativo=${activeUserId})`);
         scheduleRetry(userId);
         return;
     }
@@ -410,6 +436,7 @@ async function startPlayback(userId: string) {
     };
 
     connection.onconnectionstatechange = () => {
+        note(`pc ${connection.connectionState}`);
         if (connection.connectionState === "failed") {
             stopPlayback();
             scheduleRetry(userId);
@@ -428,6 +455,7 @@ async function startPlayback(userId: string) {
     const answer = (await VesktopNative.buteco.web.whep(sdp)) as ButecoResult<{ sdp: string }>;
     if (pc !== connection) return;
     if (!answer.ok || !answer.value?.sdp) {
+        note(`whep falhou: ${JSON.stringify(answer.ok ? "sem sdp" : answer.error).slice(0, 200)}`);
         stopPlayback();
         scheduleRetry(userId);
         return;
@@ -507,6 +535,10 @@ onceReady.then(() => {
     // O React remonta os tiles a cada mudança de layout; mantém o vídeo no
     // tile focado enquanto a conexão existir.
     const keepAlive = () => {
+        if (installed && !pc && activeUserId && !retryTimer && !starting && retryAttempts < MAX_RETRIES) {
+            void startPlayback(activeUserId);
+            return;
+        }
         if (!pc || !mediaStream) return;
         const tile = findFocusedTile();
         if (!tile) {
