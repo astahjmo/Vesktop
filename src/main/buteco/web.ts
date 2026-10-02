@@ -157,12 +157,26 @@ export function registerButecoWeb() {
     });
 
     handle(IpcEvents.BUTECO_WEB_PUBLISH, async (_, sdp: string) => {
-        const { room } = butecoWebStore.getState();
+        const state = butecoWebStore.getState();
+        const { room } = state;
         const socketId = roomSocket?.getSocketId() ?? null;
         if (!room || !socketId) {
             return { ok: false, error: { code: "token_invalid", message: "Entre numa sala primeiro." } };
         }
-        const res = await webPublishScreen(room.roomId, socketId, sdp);
+
+        let res = await webPublishScreen(room.roomId, socketId, sdp);
+
+        // Vaga de tela presa de uma sessão ANTERIOR da própria conta (app
+        // fechado no meio de uma transmissão): o servidor responde
+        // `screen_taken` embora não haja ninguém publicando. Se quem consta
+        // como dono da tela é o nosso próprio usuário, solta e tenta de novo.
+        const selfId = state.status.user?.id;
+        const staleOwnScreen = Boolean(selfId) && room.members.some(m => m.userId === selfId && m.screenId);
+        if (!res.ok && res.error.code === "screen_taken" && staleOwnScreen) {
+            await webReleaseScreen(room.roomId, socketId);
+            res = await webPublishScreen(room.roomId, socketId, sdp);
+        }
+
         if (res.ok) {
             activePublish = { roomId: room.roomId, socketId };
             butecoStore.setPublishing(true);
