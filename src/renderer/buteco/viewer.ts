@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { findByProps, onceReady } from "@vencord/types/webpack";
+import { findByProps, onceReady, wreq } from "@vencord/types/webpack";
 import { UserStore } from "@vencord/types/webpack/common";
 import type { ButecoIceServer, ButecoResult } from "shared/buteco";
 
@@ -38,6 +38,7 @@ let origRtc: {
     getParticipant: any;
 } | null = null;
 let origStreams: { getActiveStreamForApplicationStream: any; getActiveStreamForStreamKey: any } | null = null;
+let origCollectionGetParticipant: any = null;
 
 let pc: RTCPeerConnection | null = null;
 let mediaStream: MediaStream | null = null;
@@ -101,6 +102,39 @@ function resolveDiscordUserId(siteId: string, displayName: string): string | nul
     return null;
 }
 
+/**
+ * Classe da coleção interna de participantes do ChannelRTCStore. Depois de cada
+ * atualização o store revalida a seleção com `collection.getParticipant(id)`
+ * (não com o getter do store); sem o nosso participante ali, a seleção do
+ * player volta para "nenhuma" em poucos ms.
+ */
+function findParticipantCollection(): any {
+    if (!wreq) return null;
+    for (const [id, factory] of Object.entries<any>(wreq.m)) {
+        let source = "";
+        try {
+            source = factory.toString();
+        } catch {
+            continue;
+        }
+        if (
+            source.length < 60000 &&
+            source.includes("updateParticipantPoppedOut") &&
+            source.includes("getParticipant(") &&
+            !source.includes("CHANNEL_RTC_SELECT_PARTICIPANT")
+        ) {
+            try {
+                const exported = wreq(id);
+                const cls = exported?.Ay ?? exported?.default;
+                if (cls?.prototype?.getParticipant) return cls;
+            } catch {
+                // módulo que não carrega: segue procurando
+            }
+        }
+    }
+    return null;
+}
+
 /** Instala o stream/participante falso e patcha os stores. */
 function install(userId: string, displayName: string, channelId: string, guildId: string | null): boolean {
     if (installed && activeUserId === userId) return true;
@@ -111,7 +145,9 @@ function install(userId: string, displayName: string, channelId: string, guildId
     if (!rtc || !streams) return false;
 
     const user = UserStore.getUser(userId) ?? UserStore.getCurrentUser();
-    const streamKey = `${channelId}:${userId}`;
+    // O Discord parseia a chave: `guild:<guildId>:<channelId>:<ownerId>` ou
+    // `call:<channelId>:<ownerId>` (DM). Outro formato quebra o player nativo.
+    const streamKey = guildId ? `guild:${guildId}:${channelId}:${userId}` : `call:${channelId}:${userId}`;
 
     fakeStream = {
         streamKey,
@@ -193,6 +229,23 @@ function install(userId: string, displayName: string, channelId: string, guildId
         };
     }
 
+    if (!origCollectionGetParticipant) {
+        const collection = findParticipantCollection();
+        if (collection) {
+            const original = collection.prototype.getParticipant;
+            origCollectionGetParticipant = { collection, original };
+            collection.prototype.getParticipant = function (id: string) {
+                if (
+                    fakeParticipant &&
+                    id === fakeParticipant.id &&
+                    this.channelId === fakeParticipant.stream?.channelId
+                )
+                    return fakeParticipant;
+                return original.call(this, id);
+            };
+        }
+    }
+
     activeUserId = userId;
     installed = true;
     try {
@@ -207,6 +260,23 @@ function install(userId: string, displayName: string, channelId: string, guildId
 function uninstall() {
     const rtc = findByProps("getStreamParticipants");
     const streams = findByProps("getStreamForUser");
+
+    // Se o player estava focado no nosso stream, volta para a grade antes de sumir com ele.
+    if (rtc && fakeParticipant) {
+        const channelId = fakeParticipant.stream?.channelId;
+        if (channelId && rtc.getSelectedParticipantId?.(channelId) === fakeParticipant.id) {
+            try {
+                findByProps("selectParticipant")?.selectParticipant?.(channelId, null);
+            } catch {
+                // sem seleção para limpar
+            }
+        }
+    }
+
+    if (origCollectionGetParticipant) {
+        origCollectionGetParticipant.collection.prototype.getParticipant = origCollectionGetParticipant.original;
+        origCollectionGetParticipant = null;
+    }
 
     if (rtc && origRtc) {
         rtc.getParticipants = origRtc.getParticipants;
