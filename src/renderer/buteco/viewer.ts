@@ -8,15 +8,22 @@ import { findByProps, onceReady, wreq } from "@vencord/types/webpack";
 import { FluxDispatcher, UserStore } from "@vencord/types/webpack/common";
 import type { ButecoIceServer, ButecoResult } from "shared/buteco";
 
+import { isButecoPublishing } from "./publishState";
 import { findRoomStream, getButecoWebState, subscribeButecoWeb } from "./webState";
 
 /**
- * Viewer "nativo": em vez de um tile próprio, injeta um participante sintético
+ * Viewer "nativo": em vez de um tile próprio, injeta participantes sintéticos
  * do tipo STREAM no ChannelRTCStore do Discord. A UI nativa (grade, botão
  * Watch, player em foco, filme-strip, controles) passa a existir sozinha; o
- * vídeo do SFU do Buteco entra por cima do container do player via WHEP.
+ * vídeo do SFU do Buteco entra por cima do tile em foco via WHEP.
  *
- * Tudo é revertido quando a transmissão some (ou a sala fecha).
+ * Fontes de stream (uma por pessoa compartilhando):
+ * - a sala em que já estamos (estado da sala);
+ * - qualquer sala aberta do lobby com tela ao vivo, sem precisar entrar nela.
+ *   Só viram tile se quem compartilha estiver na mesma call de voz do Discord.
+ *
+ * O vídeo só é puxado quando o usuário clica em Watch (entrando na sala nesse
+ * momento, se ainda não estiver nela). Tudo é revertido quando a fonte some.
  */
 
 const VIDEO_ID = "vc-buteco-native-video";
@@ -27,10 +34,26 @@ const PARTICIPANT_STREAM = 0;
 const RETRY_MS = 4000;
 const MAX_RETRIES = 6;
 
-let installed = false;
-let activeUserId: string | null = null;
-let fakeStream: any = null;
-let fakeParticipant: any = null;
+interface Source {
+    discordUserId: string;
+    siteUserId: string;
+    displayName: string;
+    roomId: string;
+    /** Já estamos dentro da sala onde essa tela está. */
+    joined: boolean;
+    stream: any;
+    participant: any;
+}
+
+interface Desired {
+    siteUserId: string;
+    displayName: string;
+    roomId: string;
+    joined: boolean;
+}
+
+const sources = new Map<string, Source>();
+
 let origRtc: {
     getParticipants: any;
     getFilteredParticipants: any;
@@ -38,7 +61,13 @@ let origRtc: {
     getParticipant: any;
 } | null = null;
 let origStreams: { getActiveStreamForApplicationStream: any; getActiveStreamForStreamKey: any } | null = null;
-let origCollectionGetParticipant: any = null;
+let origCollectionGetParticipant: { collection: any; original: any } | null = null;
+
+/** Quem o usuário está assistindo (clicou em Watch). */
+let watchedUserId: string | null = null;
+/** Sala em que entramos sozinhos por causa de um Watch; saímos ao parar de assistir. */
+let autoJoinedRoomId: string | null = null;
+let lobbyRequested = false;
 
 let pc: RTCPeerConnection | null = null;
 let mediaStream: MediaStream | null = null;
@@ -46,13 +75,12 @@ let video: HTMLVideoElement | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempts = 0;
 let starting = false;
-/** Streamer que o usuário mandou parar de assistir (menu nativo); limpo ao desinstalar. */
-let dismissedUserId: string | null = null;
 const debugLog: string[] = [];
 
 function note(message: string) {
+    if (debugLog[debugLog.length - 1]?.endsWith(message)) return;
     debugLog.push(`${new Date().toISOString().slice(11, 23)} ${message}`);
-    if (debugLog.length > 40) debugLog.shift();
+    if (debugLog.length > 60) debugLog.shift();
 }
 
 // Handle de diagnóstico: __butecoViewer.pc.getStats()
@@ -67,7 +95,18 @@ function note(message: string) {
         return video;
     },
     get installed() {
-        return installed;
+        return sources.size > 0;
+    },
+    get sources() {
+        return [...sources.values()].map(({ discordUserId, displayName, roomId, joined }) => ({
+            discordUserId,
+            displayName,
+            roomId,
+            joined
+        }));
+    },
+    get watching() {
+        return watchedUserId;
     }
 };
 
@@ -127,7 +166,7 @@ function resolveDiscordUserId(siteId: string, displayName: string): string | nul
         }
     }
 
-    note(`sem ponte site→Discord para "${displayName}"`);
+    // Quem compartilha pode simplesmente não estar nesta call: não é erro.
     return null;
 }
 
@@ -164,25 +203,143 @@ function findParticipantCollection(): any {
     return null;
 }
 
-/** Instala o stream/participante falso e patcha os stores. */
-function install(userId: string, displayName: string, channelId: string, guildId: string | null): boolean {
-    if (installed && activeUserId === userId) return true;
+function emitStoreChanges() {
+    try {
+        findByProps("getStreamParticipants")?.emitChange?.();
+        findByProps("getStreamForUser")?.emitChange?.();
+    } catch {
+        // um subscriber quebrado não deve impedir a injeção
+    }
+}
 
+function sourceByParticipantId(id: string): Source | undefined {
+    for (const source of sources.values()) if (source.participant.id === id) return source;
+    return undefined;
+}
+
+function sourceByStreamKey(key: string): Source | undefined {
+    for (const source of sources.values()) if (source.stream.streamKey === key) return source;
+    return undefined;
+}
+
+/** Patcha os stores (uma vez), para todas as fontes. */
+function ensurePatched(): boolean {
     const rtc = findByProps("getStreamParticipants");
     const streams = findByProps("getStreamForUser");
-    const voiceStates = findByProps("getVoiceState");
     if (!rtc || !streams) return false;
 
-    const user = UserStore.getUser(userId) ?? UserStore.getCurrentUser();
+    if (!origRtc) {
+        origRtc = {
+            getParticipants: rtc.getParticipants,
+            getFilteredParticipants: rtc.getFilteredParticipants,
+            getStreamParticipants: rtc.getStreamParticipants,
+            getParticipant: rtc.getParticipant
+        };
+        const originals = origRtc;
+        const inject = (list: any[] | undefined, channelId: string) => {
+            const items = list ?? [];
+            const extra = [...sources.values()]
+                .filter(source => source.stream.channelId === channelId)
+                .map(source => source.participant)
+                .filter(participant => !items.some(item => item.id === participant.id));
+            return extra.length ? [...items, ...extra] : items;
+        };
+
+        rtc.getParticipants = function (channelId: string) {
+            return inject(originals.getParticipants.call(this, channelId), channelId);
+        };
+        rtc.getFilteredParticipants = function (channelId: string) {
+            return inject(originals.getFilteredParticipants.call(this, channelId), channelId);
+        };
+        rtc.getStreamParticipants = function (channelId: string) {
+            return inject(originals.getStreamParticipants.call(this, channelId), channelId);
+        };
+        rtc.getParticipant = function (channelId: string, id: string) {
+            return sourceByParticipantId(id)?.participant ?? originals.getParticipant.call(this, channelId, id);
+        };
+    }
+
+    if (!origStreams) {
+        origStreams = {
+            getActiveStreamForApplicationStream: streams.getActiveStreamForApplicationStream,
+            getActiveStreamForStreamKey: streams.getActiveStreamForStreamKey
+        };
+        const originals = origStreams;
+        streams.getActiveStreamForApplicationStream = function (stream: any) {
+            for (const source of sources.values()) if (source.stream === stream) return stream;
+            return originals.getActiveStreamForApplicationStream.call(this, stream);
+        };
+        streams.getActiveStreamForStreamKey = function (key: string) {
+            return sourceByStreamKey(key)?.stream ?? originals.getActiveStreamForStreamKey.call(this, key);
+        };
+    }
+
+    if (!origCollectionGetParticipant) {
+        const collection = findParticipantCollection();
+        if (collection) {
+            const original = collection.prototype.getParticipant;
+            origCollectionGetParticipant = { collection, original };
+            collection.prototype.getParticipant = function (id: string) {
+                const source = sourceByParticipantId(id);
+                if (source && this.channelId === source.stream.channelId) return source.participant;
+                return original.call(this, id);
+            };
+        }
+    }
+
+    return true;
+}
+
+function unpatch() {
+    const rtc = findByProps("getStreamParticipants");
+    const streams = findByProps("getStreamForUser");
+
+    if (origCollectionGetParticipant) {
+        origCollectionGetParticipant.collection.prototype.getParticipant = origCollectionGetParticipant.original;
+        origCollectionGetParticipant = null;
+    }
+    if (rtc && origRtc) {
+        rtc.getParticipants = origRtc.getParticipants;
+        rtc.getFilteredParticipants = origRtc.getFilteredParticipants;
+        rtc.getStreamParticipants = origRtc.getStreamParticipants;
+        rtc.getParticipant = origRtc.getParticipant;
+    }
+    if (streams && origStreams) {
+        streams.getActiveStreamForApplicationStream = origStreams.getActiveStreamForApplicationStream;
+        streams.getActiveStreamForStreamKey = origStreams.getActiveStreamForStreamKey;
+    }
+    origRtc = null;
+    origStreams = null;
+}
+
+/** Sai do player em foco se ele estiver no stream dessa fonte. */
+function deselectIfSelected(source: Source) {
+    try {
+        const rtc = findByProps("getStreamParticipants");
+        const { channelId } = source.stream;
+        if (rtc?.getSelectedParticipantId?.(channelId) === source.participant.id) {
+            findByProps("selectParticipant")?.selectParticipant?.(channelId, null);
+        }
+    } catch {
+        // sem seleção para limpar
+    }
+}
+
+function addSource(discordUserId: string, desired: Desired, channelId: string, guildId: string | null): boolean {
+    if (!ensurePatched()) return false;
+
+    const user = UserStore.getUser(discordUserId);
+    if (!user) return false;
+
     // O Discord parseia a chave: `guild:<guildId>:<channelId>:<ownerId>` ou
     // `call:<channelId>:<ownerId>` (DM). Outro formato quebra o player nativo.
-    const streamKey = guildId ? `guild:${guildId}:${channelId}:${userId}` : `call:${channelId}:${userId}`;
+    const streamKey = guildId ? `guild:${guildId}:${channelId}:${discordUserId}` : `call:${channelId}:${discordUserId}`;
 
-    fakeStream = {
+    const stream = {
         streamKey,
         channelId,
         guildId,
-        ownerId: userId,
+        ownerId: discordUserId,
         rtcServerId: "0",
         rtcRegion: "brazil",
         viewerIds: [],
@@ -195,161 +352,54 @@ function install(userId: string, displayName: string, channelId: string, guildId
         getMediaEngineConnectionId: () => "buteco-native"
     };
 
-    fakeParticipant = {
+    const voiceStates = findByProps("getVoiceState");
+    const participant = {
         type: PARTICIPANT_STREAM,
         id: streamKey,
         user,
-        userNick: displayName,
-        voiceState: voiceStates?.getVoiceState?.(guildId, userId),
+        userNick: desired.displayName,
+        voiceState: voiceStates?.getVoiceState?.(guildId, discordUserId),
         speaking: false,
         soundsharing: false,
         ringing: false,
         localVideoDisabled: false,
         isPoppedOut: false,
-        stream: fakeStream
+        stream
     };
 
-    if (!origRtc) {
-        origRtc = {
-            getParticipants: rtc.getParticipants,
-            getFilteredParticipants: rtc.getFilteredParticipants,
-            getStreamParticipants: rtc.getStreamParticipants,
-            getParticipant: rtc.getParticipant
-        };
-        const originals = origRtc;
-        const inject = (list: any[] | undefined) => {
-            if (!fakeParticipant) return list ?? [];
-            const items = list ?? [];
-            return items.some(item => item.id === fakeParticipant.id) ? items : [...items, fakeParticipant];
-        };
-        const isOurChannel = (channelId: string) => channelId === fakeParticipant?.stream?.channelId;
-
-        rtc.getParticipants = function (channelId: string) {
-            const real = originals.getParticipants.call(this, channelId);
-            return isOurChannel(channelId) ? inject(real) : real;
-        };
-        rtc.getFilteredParticipants = function (channelId: string) {
-            const real = originals.getFilteredParticipants.call(this, channelId);
-            return isOurChannel(channelId) ? inject(real) : real;
-        };
-        rtc.getStreamParticipants = function (channelId: string) {
-            const real = originals.getStreamParticipants.call(this, channelId);
-            return isOurChannel(channelId) ? inject(real) : real;
-        };
-        rtc.getParticipant = function (channelId: string, id: string) {
-            if (fakeParticipant && id === fakeParticipant.id) return fakeParticipant;
-            return originals.getParticipant.call(this, channelId, id);
-        };
-    }
-
-    if (!origStreams) {
-        origStreams = {
-            getActiveStreamForApplicationStream: streams.getActiveStreamForApplicationStream,
-            getActiveStreamForStreamKey: streams.getActiveStreamForStreamKey
-        };
-        const originals = origStreams;
-        streams.getActiveStreamForApplicationStream = function (stream: any) {
-            if (stream === fakeStream) return fakeStream;
-            return originals.getActiveStreamForApplicationStream.call(this, stream);
-        };
-        streams.getActiveStreamForStreamKey = function (key: string) {
-            if (fakeStream && key === fakeStream.streamKey) return fakeStream;
-            return originals.getActiveStreamForStreamKey.call(this, key);
-        };
-    }
-
-    if (!origCollectionGetParticipant) {
-        const collection = findParticipantCollection();
-        if (collection) {
-            const original = collection.prototype.getParticipant;
-            origCollectionGetParticipant = { collection, original };
-            collection.prototype.getParticipant = function (id: string) {
-                if (
-                    fakeParticipant &&
-                    id === fakeParticipant.id &&
-                    this.channelId === fakeParticipant.stream?.channelId
-                )
-                    return fakeParticipant;
-                return original.call(this, id);
-            };
-        }
-    }
-
-    activeUserId = userId;
-    installed = true;
-    try {
-        rtc.emitChange?.();
-        streams.emitChange?.();
-    } catch {
-        // um subscriber quebrado não deve impedir a injeção
-    }
+    sources.set(discordUserId, {
+        discordUserId,
+        siteUserId: desired.siteUserId,
+        displayName: desired.displayName,
+        roomId: desired.roomId,
+        joined: desired.joined,
+        stream,
+        participant
+    });
+    note(
+        `tile instalado: ${desired.displayName} (sala ${desired.roomId.slice(0, 8)}, ${desired.joined ? "dentro" : "lobby"})`
+    );
     return true;
 }
 
-function uninstall() {
-    const rtc = findByProps("getStreamParticipants");
-    const streams = findByProps("getStreamForUser");
+function removeSource(discordUserId: string) {
+    const source = sources.get(discordUserId);
+    if (!source) return;
 
-    // Se o player estava focado no nosso stream, volta para a grade antes de sumir com ele.
-    if (rtc && fakeParticipant) {
-        const channelId = fakeParticipant.stream?.channelId;
-        if (channelId && rtc.getSelectedParticipantId?.(channelId) === fakeParticipant.id) {
-            try {
-                findByProps("selectParticipant")?.selectParticipant?.(channelId, null);
-            } catch {
-                // sem seleção para limpar
-            }
-        }
-    }
+    deselectIfSelected(source);
+    sources.delete(discordUserId);
+    note(`tile removido: ${source.displayName}`);
 
-    if (origCollectionGetParticipant) {
-        origCollectionGetParticipant.collection.prototype.getParticipant = origCollectionGetParticipant.original;
-        origCollectionGetParticipant = null;
-    }
-
-    if (rtc && origRtc) {
-        rtc.getParticipants = origRtc.getParticipants;
-        rtc.getFilteredParticipants = origRtc.getFilteredParticipants;
-        rtc.getStreamParticipants = origRtc.getStreamParticipants;
-        rtc.getParticipant = origRtc.getParticipant;
-    }
-    if (streams && origStreams) {
-        streams.getActiveStreamForApplicationStream = origStreams.getActiveStreamForApplicationStream;
-        streams.getActiveStreamForStreamKey = origStreams.getActiveStreamForStreamKey;
-    }
-
-    origRtc = null;
-    origStreams = null;
-    fakeStream = null;
-    fakeParticipant = null;
-    activeUserId = null;
-    dismissedUserId = null;
-    installed = false;
-
-    try {
-        rtc?.emitChange?.();
-        streams?.emitChange?.();
-    } catch {
-        // idem
+    if (watchedUserId === discordUserId) {
+        watchedUserId = null;
+        cancelRetry();
+        stopPlayback();
+        leaveAutoJoinedRoom();
     }
 }
 
-/** O tile do NOSSO stream: atributo de vídeo do usuário + botão Watch. */
-function findFakeTile(): HTMLElement | null {
-    if (!fakeParticipant) return null;
-    const userId = fakeParticipant.user?.id;
-    if (!userId) return null;
-
-    const tiles = [...document.querySelectorAll<HTMLElement>(`[data-selenium-video-tile="${userId}"]`)];
-    return tiles.find(tile => /watch/i.test(tile.textContent || "")) ?? null;
-}
-
-/** O tile focado (player): o nosso tile quando está grande. */
-function findFocusedTile(): HTMLElement | null {
-    if (!fakeParticipant) return null;
-    const userId = fakeParticipant.user?.id;
-    if (!userId) return null;
-
+/** O tile do NOSSO stream na grade: atributo de vídeo do usuário + botão Watch. */
+function findFocusedTile(userId: string): HTMLElement | null {
     const tiles = [...document.querySelectorAll<HTMLElement>(`[data-selenium-video-tile="${userId}"]`)];
     return tiles.find(tile => tile.getBoundingClientRect().width > 600) ?? null;
 }
@@ -360,7 +410,7 @@ function removeVideo() {
 }
 
 function injectVideo(stream: MediaStream) {
-    const tile = findFocusedTile();
+    const tile = watchedUserId ? findFocusedTile(watchedUserId) : null;
     if (!tile) {
         // Sem player em foco: o tile nativo fica como está (botão Watch).
         removeVideo();
@@ -395,8 +445,7 @@ function scheduleRetry(userId: string) {
     retryTimer = setTimeout(
         () => {
             retryTimer = null;
-            const member = findRoomStream(getButecoWebState().room);
-            if (member?.userId !== userId) return;
+            if (watchedUserId !== userId) return;
             retryAttempts++;
             sync();
         },
@@ -427,12 +476,10 @@ async function startPlayback(userId: string) {
 async function startPlaybackUnsafe(userId: string) {
     if (pc) return;
     note("startPlayback");
-    const channel = getVoiceChannel();
-    if (!channel) return;
 
     const ice = (await VesktopNative.buteco.web.ice()) as ButecoResult<ButecoIceServer[]>;
-    if (!ice.ok || activeUserId !== userId) {
-        note(`ice falhou/usuário mudou (ok=${ice.ok}, ativo=${activeUserId})`);
+    if (!ice.ok || watchedUserId !== userId) {
+        note(`ice falhou/assistindo mudou (ok=${ice.ok}, assistindo=${watchedUserId})`);
         scheduleRetry(userId);
         return;
     }
@@ -492,27 +539,84 @@ function stopPlayback() {
     removeVideo();
 }
 
+function leaveAutoJoinedRoom() {
+    const roomId = autoJoinedRoomId;
+    autoJoinedRoomId = null;
+    if (!roomId) return;
+
+    // Nunca derruba uma transmissão nossa só porque paramos de assistir.
+    if (getButecoWebState().room?.roomId === roomId && !isButecoPublishing()) {
+        note(`saindo da sala ${roomId.slice(0, 8)} (entrada automática)`);
+        void VesktopNative.buteco.web.leaveRoom();
+    }
+}
+
+/** O usuário clicou em Watch: entra na sala (se preciso) e começa a puxar o vídeo. */
+async function requestWatch(source: Source) {
+    if (watchedUserId && watchedUserId !== source.discordUserId) {
+        cancelRetry();
+        stopPlayback();
+    }
+    watchedUserId = source.discordUserId;
+    cancelRetry();
+
+    if (source.joined) {
+        void startPlayback(source.discordUserId);
+        return;
+    }
+
+    const current = getButecoWebState().room;
+    if (current && current.roomId !== source.roomId) {
+        if (isButecoPublishing()) {
+            note("não troca de sala: você está transmitindo");
+            watchedUserId = null;
+            return;
+        }
+        await VesktopNative.buteco.web.leaveRoom();
+    }
+
+    autoJoinedRoomId = source.roomId;
+    note(`entrando na sala ${source.roomId.slice(0, 8)} para assistir ${source.displayName}`);
+    const result = (await VesktopNative.buteco.web.joinRoom(source.roomId, "")) as ButecoResult<void>;
+    if (!result.ok) {
+        note(`joinRoom falhou: ${JSON.stringify(result.error).slice(0, 160)}`);
+        autoJoinedRoomId = null;
+        watchedUserId = null;
+    }
+    // O estado da sala chega pelo socket; o sync() inicia o vídeo.
+}
+
+/** Para de assistir (menu nativo / troca): fecha a conexão e sai da sala se fomos nós que entramos. */
+function stopWatching() {
+    watchedUserId = null;
+    cancelRetry();
+    stopPlayback();
+    leaveAutoJoinedRoom();
+}
+
 /**
  * Para o próprio streamer o Discord trata o tile como "seu stream" (menu de
  * Stop/Change) e não alterna o player. Interceptamos o clique no NOSSO tile:
- * - na grade (botão Watch): foca o player nativo;
+ * - na grade (botão Watch): foca o player nativo e começa a assistir;
  * - com o player em foco (clique no vídeo ou no Watch): volta para a grade.
  * Botões nativos dentro do tile (Options etc.) seguem funcionando.
  */
 function handleWatchClick(event: MouseEvent) {
-    if (!installed || !fakeParticipant) return;
+    if (!sources.size) return;
 
     const target = event.target as HTMLElement | null;
-    const tile = target?.closest<HTMLElement>(`[data-selenium-video-tile="${fakeParticipant.user?.id}"]`);
-    if (!tile) return;
+    const tile = target?.closest<HTMLElement>("[data-selenium-video-tile]");
+    const userId = tile?.getAttribute("data-selenium-video-tile");
+    const source = userId ? sources.get(userId) : undefined;
+    if (!tile || !source) return;
 
     const button = target?.closest("button, [role=button]");
     const isWatchButton = Boolean(button && /watch/i.test(button.textContent || ""));
     const focused = tile.getBoundingClientRect().width > 600;
+    // O tile do próprio usuário (avatar) tem o mesmo atributo; só o nosso tem Watch/stream.
+    if (!isWatchButton && !(focused && watchedUserId === source.discordUserId)) return;
     // Um botão que não é o Watch é do Discord (menu de opções etc.): não mexe.
     if (button && !isWatchButton) return;
-    // Clique solto no tile só interessa com o player em foco.
-    if (!button && !focused) return;
 
     const channel = getVoiceChannel();
     const actions = findByProps("selectParticipant");
@@ -520,13 +624,10 @@ function handleWatchClick(event: MouseEvent) {
 
     event.preventDefault();
     event.stopPropagation();
-    if (!focused && dismissedUserId === activeUserId) {
-        // Voltou a assistir depois de "parar" pelo menu nativo.
-        dismissedUserId = null;
-        if (activeUserId) void startPlayback(activeUserId);
-    }
+
+    if (!focused) void requestWatch(source);
     try {
-        actions.selectParticipant(channel.channelId, focused ? null : fakeParticipant.id);
+        actions.selectParticipant(channel.channelId, focused ? null : source.participant.id);
     } catch {
         // se a ação falhar, deixa o clique nativo seguir
     }
@@ -539,22 +640,12 @@ function handleWatchClick(event: MouseEvent) {
  * pessoa só pára de assistir (volta para a grade e fecha a conexão local).
  */
 function handleStreamStop(event: { streamKey?: string }) {
-    if (!installed || !fakeStream || !fakeParticipant || event?.streamKey !== fakeStream.streamKey) return;
+    const source = event?.streamKey ? sourceByStreamKey(event.streamKey) : undefined;
+    if (!source) return;
 
-    const { channelId } = fakeStream;
-    const { ownerId } = fakeStream;
-    const isSelf = ownerId === UserStore.getCurrentUser()?.id;
+    const isSelf = source.discordUserId === UserStore.getCurrentUser()?.id;
     note(`stop nativo (${isSelf ? "próprio" : "outro"})`);
-
-    // Sai do player em foco antes de qualquer outra coisa.
-    try {
-        const rtc = findByProps("getStreamParticipants");
-        if (rtc?.getSelectedParticipantId?.(channelId) === fakeParticipant.id) {
-            findByProps("selectParticipant")?.selectParticipant?.(channelId, null);
-        }
-    } catch {
-        // sem seleção para limpar
-    }
+    deselectIfSelected(source);
 
     if (isSelf) {
         void import("../components/ScreenSharePicker")
@@ -564,36 +655,95 @@ function handleStreamStop(event: { streamKey?: string }) {
         return;
     }
 
-    dismissedUserId = ownerId;
-    cancelRetry();
-    stopPlayback();
+    if (watchedUserId === source.discordUserId) stopWatching();
+}
+
+/** Quem está compartilhando agora: a sala em que estamos + salas abertas do lobby. */
+function collectDesired(): Desired[] {
+    const state = getButecoWebState();
+    const desired: Desired[] = [];
+
+    const { room } = state;
+    const member = findRoomStream(room);
+    if (room && member) {
+        desired.push({
+            siteUserId: member.userId,
+            displayName: member.displayName,
+            roomId: room.roomId,
+            joined: true
+        });
+    }
+
+    for (const lobbyRoom of state.lobby ?? []) {
+        if (!lobbyRoom.screenOwnerId || lobbyRoom.hasPassword || lobbyRoom.roomId === room?.roomId) continue;
+
+        const owner =
+            lobbyRoom.members?.find(candidate => candidate.userId === lobbyRoom.screenOwnerId)?.displayName ??
+            (lobbyRoom.ownerId === lobbyRoom.screenOwnerId ? lobbyRoom.ownerName : undefined);
+        if (!owner) continue;
+
+        desired.push({
+            siteUserId: lobbyRoom.screenOwnerId,
+            displayName: owner,
+            roomId: lobbyRoom.roomId,
+            joined: false
+        });
+    }
+
+    return desired;
 }
 
 function sync() {
-    const member = findRoomStream(getButecoWebState().room);
+    const state = getButecoWebState();
+
+    // O lobby só chega depois da primeira assinatura; faz isso sem o painel aberto.
+    if (!state.status.loggedIn) {
+        lobbyRequested = false;
+    } else if (state.lobby === null && !lobbyRequested) {
+        lobbyRequested = true;
+        void Promise.resolve(VesktopNative.buteco.web.lobby()).catch(() => {
+            lobbyRequested = false;
+        });
+    }
+
+    // A sala em que entramos sozinhos acabou/fechou: esquece a marca.
+    if (autoJoinedRoomId && state.room?.roomId !== autoJoinedRoomId && !watchedUserId) autoJoinedRoomId = null;
+
     const channel = getVoiceChannel();
+    const wanted = new Map<string, Desired>();
+    if (channel) {
+        for (const desired of collectDesired()) {
+            const discordUserId = resolveDiscordUserId(desired.siteUserId, desired.displayName);
+            if (discordUserId && !wanted.has(discordUserId)) wanted.set(discordUserId, desired);
+        }
+    }
 
-    if (!member || !channel) {
+    let changed = false;
+    for (const [discordUserId, source] of [...sources]) {
+        const desired = wanted.get(discordUserId);
+        if (!desired || desired.roomId !== source.roomId || source.stream.channelId !== channel?.channelId) {
+            removeSource(discordUserId);
+            changed = true;
+        } else {
+            source.joined = desired.joined;
+        }
+    }
+    if (channel) {
+        for (const [discordUserId, desired] of wanted) {
+            if (sources.has(discordUserId)) continue;
+            if (addSource(discordUserId, desired, channel.channelId, channel.guildId)) changed = true;
+        }
+    }
+
+    if (!sources.size) {
+        if (origRtc || origStreams || origCollectionGetParticipant) unpatch();
         cancelRetry();
-        if (installed) uninstall();
         stopPlayback();
-        return;
     }
+    if (changed) emitStoreChanges();
 
-    const discordUserId = resolveDiscordUserId(member.userId, member.displayName);
-    if (!discordUserId) {
-        // Sem ponte site→Discord para esse membro; não dá para injetar.
-        if (installed) uninstall();
-        stopPlayback();
-        return;
-    }
-
-    if (!installed || activeUserId !== discordUserId) {
-        if (installed) uninstall();
-        if (!install(discordUserId, member.displayName, channel.channelId, channel.guildId)) return;
-    }
-
-    if (discordUserId !== dismissedUserId) void startPlayback(discordUserId);
+    const watched = watchedUserId ? sources.get(watchedUserId) : undefined;
+    if (watched?.joined) void startPlayback(watched.discordUserId);
 }
 
 onceReady.then(() => {
@@ -605,20 +755,14 @@ onceReady.then(() => {
     // O React remonta os tiles a cada mudança de layout; mantém o vídeo no
     // tile focado enquanto a conexão existir.
     const keepAlive = () => {
-        if (
-            installed &&
-            !pc &&
-            activeUserId &&
-            activeUserId !== dismissedUserId &&
-            !retryTimer &&
-            !starting &&
-            retryAttempts < MAX_RETRIES
-        ) {
-            void startPlayback(activeUserId);
+        const watched = watchedUserId ? sources.get(watchedUserId) : undefined;
+        if (watched?.joined && !pc && !retryTimer && !starting && retryAttempts < MAX_RETRIES) {
+            void startPlayback(watched.discordUserId);
             return;
         }
-        if (!pc || !mediaStream) return;
-        const tile = findFocusedTile();
+        if (!pc || !mediaStream || !watchedUserId) return;
+
+        const tile = findFocusedTile(watchedUserId);
         if (!tile) {
             removeVideo();
             return;
@@ -628,7 +772,11 @@ onceReady.then(() => {
 
     const observer = new MutationObserver(keepAlive);
     observer.observe(document.body, { childList: true, subtree: true });
-    setInterval(keepAlive, 1000);
+    // Entrar/sair da call muda quem pode ser casado; reavalia periodicamente.
+    setInterval(() => {
+        keepAlive();
+        sync();
+    }, 3000);
 
     sync();
 });

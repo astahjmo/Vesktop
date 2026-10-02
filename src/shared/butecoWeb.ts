@@ -21,11 +21,22 @@ export interface ButecoWebStatus {
     user: ButecoWebUser | null;
 }
 
+export interface ButecoLobbyMember {
+    userId: string;
+    displayName: string;
+    avatar?: string | null;
+}
+
 export interface ButecoRoomSummary {
     roomId: string;
     name: string;
     memberCount: number;
     hasPassword: boolean;
+    ownerId?: string;
+    ownerName?: string;
+    /** Id (do site) de quem está compartilhando a tela na sala; ausente/`null` = ninguém. */
+    screenOwnerId?: string | null;
+    members?: ButecoLobbyMember[];
 }
 
 export type ButecoTransport = "mediamtx" | "cloudflare";
@@ -102,12 +113,27 @@ export function mapLobbyRooms(raw: unknown): ButecoRoomSummary[] {
     return list.flatMap(item => {
         const room = item as any;
         if (typeof room?.roomId !== "string" || typeof room?.name !== "string") return [];
+
+        const members: ButecoLobbyMember[] | undefined = Array.isArray(room.members)
+            ? room.members.flatMap((member: any) =>
+                  typeof member?.userId === "string" && typeof member?.displayName === "string"
+                      ? [{ userId: member.userId, displayName: member.displayName, avatar: member.avatar ?? null }]
+                      : []
+              )
+            : undefined;
+
         return [
             {
                 roomId: room.roomId,
                 name: room.name,
                 memberCount: typeof room.memberCount === "number" ? room.memberCount : 0,
-                hasPassword: Boolean(room.hasPassword)
+                hasPassword: Boolean(room.hasPassword),
+                ...(typeof room.ownerId === "string" && { ownerId: room.ownerId }),
+                ...(typeof room.ownerName === "string" && { ownerName: room.ownerName }),
+                ...(room.screenOwnerId !== undefined && {
+                    screenOwnerId: typeof room.screenOwnerId === "string" ? room.screenOwnerId : null
+                }),
+                ...(members && { members })
             }
         ];
     });

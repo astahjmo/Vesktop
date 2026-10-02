@@ -22,6 +22,23 @@ describe("mapLobbyRooms", () => {
         ]);
     });
 
+    it("keeps owner, members and who is sharing the screen", () => {
+        const [room] = mapLobbyRooms([
+            {
+                roomId: "r1",
+                name: "Mesa",
+                ownerId: "u1",
+                ownerName: "Ana",
+                screenOwnerId: "u2",
+                members: [{ userId: "u2", displayName: "Beto", avatar: "a.png" }, { userId: 3 }, null]
+            },
+            { roomId: "r2", name: "Vazia", screenOwnerId: null }
+        ]);
+        expect(room).toMatchObject({ ownerId: "u1", ownerName: "Ana", screenOwnerId: "u2" });
+        expect(room.members).toEqual([{ userId: "u2", displayName: "Beto", avatar: "a.png" }]);
+        expect(mapLobbyRooms([{ roomId: "r2", name: "Vazia", screenOwnerId: null }])[0].screenOwnerId).toBeNull();
+    });
+
     it("accepts a { rooms } wrapper and rejects garbage", () => {
         expect(mapLobbyRooms({ rooms: [{ roomId: "r1", name: "Mesa" }] })).toHaveLength(1);
         expect(mapLobbyRooms(undefined)).toEqual([]);
