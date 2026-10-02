@@ -15,9 +15,38 @@ const BADGE_CLASS = "vc-buteco-stream-badge";
 let pc: RTCPeerConnection | null = null;
 let activeUserId: string | null = null;
 let failedUserId: string | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAttempts = 0;
 let row: HTMLDivElement | null = null;
 let video: HTMLVideoElement | null = null;
 let focused = false;
+
+const RETRY_MS = 4000;
+const MAX_RETRIES = 6;
+
+/** O estado pode chegar antes do SFU registrar a tela; tenta de novo. */
+function scheduleRetry(userId: string) {
+    if (retryTimer || retryAttempts >= MAX_RETRIES) return;
+
+    retryTimer = setTimeout(
+        () => {
+            retryTimer = null;
+            const member = findRoomStream(getButecoWebState().room);
+            if (member?.userId !== userId) return;
+
+            retryAttempts++;
+            failedUserId = null;
+            sync();
+        },
+        RETRY_MS * (retryAttempts + 1)
+    );
+}
+
+function cancelRetry() {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+    retryAttempts = 0;
+}
 
 // Handle de diagnóstico (console/CDP): __butecoViewer.pc.getStats().
 (globalThis as any).__butecoViewer = {
@@ -164,6 +193,7 @@ async function startWatching(userId: string, name: string) {
     if (!ice.ok || activeUserId !== userId) {
         activeUserId = null;
         failedUserId = userId;
+        scheduleRetry(userId);
         return;
     }
 
@@ -199,6 +229,7 @@ async function startWatching(userId: string, name: string) {
         if (connection.connectionState === "failed") {
             failedUserId = userId;
             stopWatching();
+            scheduleRetry(userId);
         }
     };
 
@@ -207,6 +238,7 @@ async function startWatching(userId: string, name: string) {
     const sdp = connection.localDescription?.sdp;
     if (!sdp || pc !== connection) {
         stopWatching();
+        scheduleRetry(userId);
         return;
     }
 
@@ -215,16 +247,19 @@ async function startWatching(userId: string, name: string) {
     if (!answer.ok || !answer.value?.sdp) {
         failedUserId = userId;
         stopWatching();
+        scheduleRetry(userId);
         return;
     }
 
     await connection.setRemoteDescription({ type: "answer", sdp: answer.value.sdp });
+    cancelRetry();
 }
 
 function sync() {
     const member = findRoomStream(getButecoWebState().room);
 
     if (!member) {
+        cancelRetry();
         failedUserId = null;
         if (activeUserId) stopWatching();
         else removeTile();
