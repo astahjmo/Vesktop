@@ -398,10 +398,27 @@ function removeSource(discordUserId: string) {
     }
 }
 
-/** O tile do NOSSO stream na grade: atributo de vídeo do usuário + botão Watch. */
-function findFocusedTile(userId: string): HTMLElement | null {
-    const tiles = [...document.querySelectorAll<HTMLElement>(`[data-selenium-video-tile="${userId}"]`)];
-    return tiles.find(tile => tile.getBoundingClientRect().width > 600) ?? null;
+/** Todos os tiles do usuário (o de avatar e o do stream falso têm o mesmo atributo). */
+function tilesOf(userId: string): HTMLElement[] {
+    return [...document.querySelectorAll<HTMLElement>(`[data-selenium-video-tile="${userId}"]`)];
+}
+
+/** O tile do NOSSO stream: o que tem o botão Watch (o de avatar não tem). */
+function isStreamTile(tile: HTMLElement): boolean {
+    return /watch/i.test(tile.textContent || "");
+}
+
+/**
+ * Onde o vídeo deve ficar: no player em foco (tile grande) ou, minimizado, no
+ * próprio tile da grade (preview ao vivo, como o stream nativo).
+ */
+function findWatchTarget(userId: string): { tile: HTMLElement; focused: boolean } | null {
+    const tiles = tilesOf(userId);
+    const focused = tiles.find(tile => tile.getBoundingClientRect().width > 600);
+    if (focused) return { tile: focused, focused: true };
+
+    const grid = tiles.find(isStreamTile);
+    return grid ? { tile: grid, focused: false } : null;
 }
 
 function removeVideo() {
@@ -410,33 +427,35 @@ function removeVideo() {
 }
 
 function injectVideo(stream: MediaStream) {
-    const tile = watchedUserId ? findFocusedTile(watchedUserId) : null;
-    if (!tile) {
-        // Sem player em foco: o tile nativo fica como está (botão Watch).
+    const target = watchedUserId ? findWatchTarget(watchedUserId) : null;
+    if (!target) {
         removeVideo();
         return;
     }
 
-    if (video && document.contains(video) && video.parentElement === tile) {
+    const fit = target.focused ? "contain" : "cover";
+    if (video && document.contains(video) && video.parentElement === target.tile) {
         if (video.srcObject !== stream) video.srcObject = stream;
+        video.style.objectFit = fit;
         return;
     }
 
-    removeVideo();
-    video = document.createElement("video");
-    video.id = VIDEO_ID;
-    video.autoplay = true;
-    video.playsInline = true;
-    video.style.cssText =
-        "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:5;pointer-events:none;";
-    tile.style.position = "relative";
-    tile.appendChild(video);
+    // Mesmo elemento ao mudar de tile: o vídeo (e o áudio) não reinicia.
+    if (!video) {
+        video = document.createElement("video");
+        video.id = VIDEO_ID;
+        video.autoplay = true;
+        video.playsInline = true;
+        video.srcObject = stream;
+    }
+    video.style.cssText = `position:absolute;inset:0;width:100%;height:100%;object-fit:${fit};background:#000;z-index:5;pointer-events:none;`;
+    target.tile.style.position = "relative";
+    target.tile.appendChild(video);
 
-    video.srcObject = stream;
-    void video.play().catch(() => {
-        if (!video) return;
-        video.muted = true;
-        void video.play().catch(() => {});
+    const element = video;
+    void element.play().catch(() => {
+        element.muted = true;
+        void element.play().catch(() => {});
     });
 }
 
@@ -762,12 +781,12 @@ onceReady.then(() => {
         }
         if (!pc || !mediaStream || !watchedUserId) return;
 
-        const tile = findFocusedTile(watchedUserId);
-        if (!tile) {
+        const target = findWatchTarget(watchedUserId);
+        if (!target) {
             removeVideo();
             return;
         }
-        if (!video || !document.contains(video) || video.parentElement !== tile) injectVideo(mediaStream);
+        if (!video || !document.contains(video) || video.parentElement !== target.tile) injectVideo(mediaStream);
     };
 
     const observer = new MutationObserver(keepAlive);
