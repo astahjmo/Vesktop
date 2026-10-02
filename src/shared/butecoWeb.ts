@@ -47,7 +47,7 @@ export type ButecoRoomQuality = "economica" | "alta";
  * Operações do SFU de câmera (sessão persistente do peer). O renderer só pede
  * uma delas; roomId/socketId são sempre preenchidos pelo processo principal.
  */
-export const BUTECO_SFU_OPS = ["connect", "camera", "pull", "renegotiate", "layer", "close"] as const;
+export const BUTECO_SFU_OPS = ["connect", "camera", "screen", "pull", "renegotiate", "layer", "close"] as const;
 export type ButecoSfuOp = (typeof BUTECO_SFU_OPS)[number];
 
 export interface ButecoRoomMember {
@@ -180,7 +180,8 @@ export function mapRoomState(raw: unknown): ButecoRoomState | null {
         ownerId: room.ownerId,
         members,
         screenAudioAllowed: room.screenAudioAllowed !== false,
-        screenTransport: room.screenTransport === "cloudflare" ? "cloudflare" : "mediamtx",
+        // Igual ao site: só `mediamtx` explícito usa o MediaMTX; sem o campo, a tela vai pelo SFU do Cloudflare.
+        screenTransport: room.screenTransport === "mediamtx" ? "mediamtx" : "cloudflare",
         quality: room.quality === "alta" ? "alta" : "economica"
     };
 }

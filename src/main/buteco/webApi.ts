@@ -127,10 +127,11 @@ export function webCloseConnection(
 const SFU_ROUTES: Record<ButecoSfuOp, { method: "POST" | "PUT"; path: string; fields: readonly string[] }> = {
     connect: { method: "POST", path: "/api/compartilhagram/sfu/connect", fields: ["sdp", "mids"] },
     camera: { method: "POST", path: "/api/compartilhagram/sfu/camera", fields: ["on"] },
+    screen: { method: "POST", path: "/api/compartilhagram/sfu/screen", fields: ["on"] },
     pull: { method: "POST", path: "/api/compartilhagram/sfu/pull", fields: ["targets"] },
     renegotiate: { method: "PUT", path: "/api/compartilhagram/sfu/renegotiate", fields: ["sdp"] },
     layer: { method: "PUT", path: "/api/compartilhagram/sfu/layer", fields: ["updates"] },
-    close: { method: "POST", path: "/api/compartilhagram/sfu/close", fields: [] }
+    close: { method: "POST", path: "/api/compartilhagram/sfu/close", fields: ["mids", "sdp"] }
 };
 
 /**

@@ -75,7 +75,14 @@ describe("mapRoomState", () => {
         expect(room!.members[0]).toMatchObject({ userId: "u1", displayName: "Ana", screenId: "s1", screenAudio: true });
         expect(room!.members[1]).toMatchObject({ userId: "u2", displayName: "u2", screenId: null, screenAudio: false });
         expect(room!.screenAudioAllowed).toBe(true);
-        expect(room!.screenTransport).toBe("mediamtx");
+    });
+
+    it("follows the site's screen transport default: Cloudflare unless the room says mediamtx", () => {
+        const base = { roomId: "r1", members: [] };
+        expect(mapRoomState(base)!.screenTransport).toBe("cloudflare");
+        expect(mapRoomState({ ...base, screenTransport: "cloudflare" })!.screenTransport).toBe("cloudflare");
+        expect(mapRoomState({ ...base, screenTransport: "algo-novo" })!.screenTransport).toBe("cloudflare");
+        expect(mapRoomState({ ...base, screenTransport: "mediamtx" })!.screenTransport).toBe("mediamtx");
     });
 
     it("returns null without a roomId and tolerates bad members", () => {

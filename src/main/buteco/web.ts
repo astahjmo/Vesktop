@@ -30,7 +30,7 @@ let roomSocketPromise: Promise<RoomSocket | null> | null = null;
  * Sobrevive a leave/closed/disconnect (ao contrário do estado da sala) para
  * que o stop saiba o que soltar, e é limpa exatamente uma vez.
  */
-let activePublish: { roomId: string; socketId: string } | null = null;
+let activePublish: { roomId: string; socketId: string; transport: "mediamtx" | "cloudflare" } | null = null;
 
 function broadcast(event?: ButecoWebEvent, control?: "stop") {
     const envelope: ButecoWebEnvelope = {
@@ -185,7 +185,7 @@ export function registerButecoWeb() {
         }
 
         if (res.ok) {
-            activePublish = { roomId: room.roomId, socketId };
+            activePublish = { roomId: room.roomId, socketId, transport: "mediamtx" };
             butecoStore.setPublishing(true);
         } else if (res.error.code === "token_invalid") {
             markSessionExpired();
@@ -212,6 +212,18 @@ export function registerButecoWeb() {
         }
         const res = await webSfu(op, room.roomId, socketId, payload);
         if (!res.ok && res.error.code === "token_invalid") markSessionExpired();
+
+        // A tela pelo SFU do Cloudflare não passa pelo WHIP: o liga/desliga dela é
+        // o que marca a publicação como ativa (e o que a libera ao sair da sala).
+        if (op === "screen" && res.ok) {
+            if (payload?.on === true) {
+                activePublish = { roomId: room.roomId, socketId, transport: "cloudflare" };
+                butecoStore.setPublishing(true);
+            } else if (payload?.on === false && activePublish?.transport === "cloudflare") {
+                activePublish = null;
+                butecoStore.setPublishing(false);
+            }
+        }
         return res;
     });
 
@@ -225,7 +237,9 @@ export function registerButecoWeb() {
 
         const released = await webReleaseScreen(publish.roomId, publish.socketId);
         if (!released.ok && released.error.code === "token_invalid") markSessionExpired();
-        void webCloseConnection(publish.roomId, publish.socketId).catch(() => {});
+        // O `close` sem mids encerra a sessão toda do SFU: no Cloudflare ela também
+        // carrega a câmera, então só a publicação via MediaMTX fecha a conexão.
+        if (publish.transport === "mediamtx") void webCloseConnection(publish.roomId, publish.socketId).catch(() => {});
         return released;
     });
 }
