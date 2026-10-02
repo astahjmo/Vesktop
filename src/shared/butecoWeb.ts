@@ -41,11 +41,22 @@ export interface ButecoRoomSummary {
 
 export type ButecoTransport = "mediamtx" | "cloudflare";
 
+export type ButecoRoomQuality = "economica" | "alta";
+
+/**
+ * Operações do SFU de câmera (sessão persistente do peer). O renderer só pede
+ * uma delas; roomId/socketId são sempre preenchidos pelo processo principal.
+ */
+export const BUTECO_SFU_OPS = ["connect", "camera", "pull", "renegotiate", "layer", "close"] as const;
+export type ButecoSfuOp = (typeof BUTECO_SFU_OPS)[number];
+
 export interface ButecoRoomMember {
     userId: string;
     displayName: string;
     avatar?: string | null;
     screenId?: string | null;
+    /** Faixa de câmera publicada no SFU (`null`/ausente = câmera desligada). */
+    cameraId?: string | null;
     screenAudio?: boolean;
     screenTransport?: ButecoTransport;
 }
@@ -57,6 +68,8 @@ export interface ButecoRoomState {
     members: ButecoRoomMember[];
     screenAudioAllowed: boolean;
     screenTransport: ButecoTransport;
+    /** Preset de qualidade da sala (define captura e camadas da câmera). */
+    quality: ButecoRoomQuality;
 }
 
 export interface ButecoWebState {
@@ -152,6 +165,7 @@ export function mapRoomState(raw: unknown): ButecoRoomState | null {
                             displayName: typeof member.displayName === "string" ? member.displayName : member.userId,
                             avatar: member.avatar ?? null,
                             screenId: member.screenId ?? null,
+                            cameraId: member.cameraId ?? null,
                             screenAudio: Boolean(member.screenAudio),
                             screenTransport: member.screenTransport
                         }
@@ -166,6 +180,7 @@ export function mapRoomState(raw: unknown): ButecoRoomState | null {
         ownerId: room.ownerId,
         members,
         screenAudioAllowed: room.screenAudioAllowed !== false,
-        screenTransport: room.screenTransport === "cloudflare" ? "cloudflare" : "mediamtx"
+        screenTransport: room.screenTransport === "cloudflare" ? "cloudflare" : "mediamtx",
+        quality: room.quality === "alta" ? "alta" : "economica"
     };
 }

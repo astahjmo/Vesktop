@@ -6,7 +6,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { fetchWebIce, webPublishScreen, webReleaseScreen, webRequest, webSubscribeScreen } from "./webApi";
+import { fetchWebIce, webPublishScreen, webReleaseScreen, webRequest, webSfu, webSubscribeScreen } from "./webApi";
 import { getWebCookieHeader } from "./webSession";
 
 vi.mock("./webSession", () => ({
@@ -90,5 +90,50 @@ describe("web endpoints", () => {
         const [url, init] = (fetchImpl as any).mock.calls[0];
         expect(url).toBe("https://games.butecodosdevs.com/api/compartilhagram/sfu/screen");
         expect(JSON.parse(init.body)).toEqual({ roomId: "r1", socketId: "s1", on: false });
+    });
+});
+
+describe("webSfu", () => {
+    it("posts only the allowed fields with the room and socket ids", async () => {
+        const fetchImpl = fakeFetch(200, { sdp: "offer" });
+        const res = await webSfu(
+            "camera",
+            "r1",
+            "s1",
+            { on: true, roomId: "evil", extra: 1 },
+            {
+                cookieHeader: "c=1",
+                fetchImpl
+            }
+        );
+        expect(res).toEqual({ ok: true, value: { sdp: "offer" } });
+        const [url, init] = (fetchImpl as any).mock.calls[0];
+        expect(url).toBe("https://games.butecodosdevs.com/api/compartilhagram/sfu/camera");
+        expect(init.method).toBe("POST");
+        expect(JSON.parse(init.body)).toEqual({ roomId: "r1", socketId: "s1", on: true });
+    });
+
+    it("uses PUT for renegotiate and layer", async () => {
+        const fetchImpl = fakeFetch(204, undefined);
+        await webSfu("renegotiate", "r1", "s1", { sdp: "answer" }, { cookieHeader: "c=1", fetchImpl });
+        await webSfu("layer", "r1", "s1", { updates: [{ mid: "1", rid: "l" }] }, { cookieHeader: "c=1", fetchImpl });
+        const { calls } = (fetchImpl as any).mock;
+        expect(calls[0][1].method).toBe("PUT");
+        expect(calls[1][1].method).toBe("PUT");
+        expect(JSON.parse(calls[1][1].body).updates).toEqual([{ mid: "1", rid: "l" }]);
+    });
+
+    it("rejects unknown operations without calling the network", async () => {
+        const fetchImpl = vi.fn() as unknown as typeof fetch;
+        const res = await webSfu("../admin/kick" as any, "r1", "s1", {}, { cookieHeader: "c=1", fetchImpl });
+        expect(res.ok).toBe(false);
+        expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it("surfaces the server reason (busy/full/blocked)", async () => {
+        const fetchImpl = fakeFetch(409, { reason: "full" });
+        const res = await webSfu("camera", "r1", "s1", { on: true }, { cookieHeader: "c=1", fetchImpl });
+        expect(res.ok).toBe(false);
+        if (!res.ok) expect(res.error.message).toBe("full");
     });
 });

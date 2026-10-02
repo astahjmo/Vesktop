@@ -5,7 +5,7 @@
  */
 
 import { type ButecoIceServer, type ButecoResult, mapGroundRefusal } from "shared/buteco";
-import { BUTECO_WEB_ORIGIN } from "shared/butecoWeb";
+import { BUTECO_WEB_ORIGIN, type ButecoSfuOp } from "shared/butecoWeb";
 
 import { getWebCookieHeader } from "./webSession";
 
@@ -122,4 +122,36 @@ export function webCloseConnection(
         body: { roomId, socketId },
         ...deps
     });
+}
+
+const SFU_ROUTES: Record<ButecoSfuOp, { method: "POST" | "PUT"; path: string; fields: readonly string[] }> = {
+    connect: { method: "POST", path: "/api/compartilhagram/sfu/connect", fields: ["sdp", "mids"] },
+    camera: { method: "POST", path: "/api/compartilhagram/sfu/camera", fields: ["on"] },
+    pull: { method: "POST", path: "/api/compartilhagram/sfu/pull", fields: ["targets"] },
+    renegotiate: { method: "PUT", path: "/api/compartilhagram/sfu/renegotiate", fields: ["sdp"] },
+    layer: { method: "PUT", path: "/api/compartilhagram/sfu/layer", fields: ["updates"] },
+    close: { method: "POST", path: "/api/compartilhagram/sfu/close", fields: [] }
+};
+
+/**
+ * Operação do SFU de câmera. Só rotas e campos de uma lista fixa; o corpo
+ * sempre leva o roomId/socketId da sessão do processo principal.
+ */
+export function webSfu(
+    op: ButecoSfuOp,
+    roomId: string,
+    socketId: string,
+    payload: Record<string, unknown> | undefined,
+    deps: WebApiDeps = {}
+): Promise<ButecoResult<any>> {
+    const route = Object.hasOwn(SFU_ROUTES, op) ? SFU_ROUTES[op] : undefined;
+    if (!route) {
+        return Promise.resolve({ ok: false, error: { code: "network", message: "Operação inválida." } });
+    }
+
+    const body: Record<string, unknown> = { roomId, socketId };
+    for (const field of route.fields) {
+        if (payload?.[field] !== undefined) body[field] = payload[field];
+    }
+    return webRequest(route.path, { method: route.method, body, ...deps });
 }

@@ -9,7 +9,7 @@ import { ipcRenderer } from "electron/renderer";
 import type { ButecoWireSession } from "main/buteco/store";
 import type { IpcMessage, IpcResponse } from "main/ipcCommands";
 import type { ButecoIceServer, ButecoResult } from "shared/buteco";
-import type { ButecoRoomSummary, ButecoWebEnvelope, ButecoWebStatus } from "shared/butecoWeb";
+import type { ButecoRoomSummary, ButecoSfuOp, ButecoWebEnvelope, ButecoWebStatus } from "shared/butecoWeb";
 import type { Settings } from "shared/settings";
 
 import { IpcEvents } from "../shared/IpcEvents";
@@ -116,6 +116,8 @@ export const VesktopNative = {
             publish: (sdp: string) => invoke<ButecoResult<{ sdp: string }>>(IpcEvents.BUTECO_WEB_PUBLISH, sdp),
             unpublish: () => invoke<ButecoResult<void>>(IpcEvents.BUTECO_WEB_UNPUBLISH),
             whep: (sdp: string) => invoke<ButecoResult<{ sdp: string }>>(IpcEvents.BUTECO_WEB_WHEP, sdp),
+            sfu: (op: ButecoSfuOp, payload?: Record<string, unknown>) =>
+                invoke<ButecoResult<any>>(IpcEvents.BUTECO_WEB_SFU, op, payload),
             onEvent: (cb: (envelope: ButecoWebEnvelope) => void) => {
                 ipcRenderer.on(IpcEvents.BUTECO_WEB_EVENT, (_e, envelope) => cb(envelope));
             }

@@ -5,13 +5,20 @@
  */
 
 import { webContents } from "electron";
-import { type ButecoWebEnvelope, type ButecoWebEvent, mapJoinDeniedMessage } from "shared/butecoWeb";
+import { type ButecoSfuOp, type ButecoWebEnvelope, type ButecoWebEvent, mapJoinDeniedMessage } from "shared/butecoWeb";
 import { IpcEvents } from "shared/IpcEvents";
 
 import { handle } from "../utils/ipcWrappers";
 import { createRoomSocket, type RoomSocket } from "./roomSocket";
 import { butecoStore } from "./store";
-import { fetchWebIce, webCloseConnection, webPublishScreen, webReleaseScreen, webSubscribeScreen } from "./webApi";
+import {
+    fetchWebIce,
+    webCloseConnection,
+    webPublishScreen,
+    webReleaseScreen,
+    webSfu,
+    webSubscribeScreen
+} from "./webApi";
 import { getWebCookieHeader, getWebStatus, openWebLoginWindow } from "./webSession";
 import { butecoWebStore } from "./webStore";
 
@@ -193,6 +200,17 @@ export function registerButecoWeb() {
             return { ok: false, error: { code: "token_invalid", message: "Entre numa sala primeiro." } };
         }
         const res = await webSubscribeScreen(room.roomId, socketId, sdp);
+        if (!res.ok && res.error.code === "token_invalid") markSessionExpired();
+        return res;
+    });
+
+    handle(IpcEvents.BUTECO_WEB_SFU, async (_, op: ButecoSfuOp, payload?: Record<string, unknown>) => {
+        const { room } = butecoWebStore.getState();
+        const socketId = roomSocket?.getSocketId() ?? null;
+        if (!room || !socketId) {
+            return { ok: false, error: { code: "token_invalid", message: "Entre numa sala primeiro." } };
+        }
+        const res = await webSfu(op, room.roomId, socketId, payload);
         if (!res.ok && res.error.code === "token_invalid") markSessionExpired();
         return res;
     });

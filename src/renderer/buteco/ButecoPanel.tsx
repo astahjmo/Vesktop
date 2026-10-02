@@ -15,6 +15,7 @@ import { isLinux } from "renderer/utils";
 import type { ButecoError, ButecoSource } from "shared/buteco";
 import type { ButecoRoomState, ButecoRoomSummary } from "shared/butecoWeb";
 
+import { disableButecoCamera, enableButecoCamera, useButecoCameraState } from "./cameraSession";
 import { BUTECO_ERROR_MESSAGES } from "./messages";
 import { BUTECO_FPS, BUTECO_HEIGHTS, clampFps, clampHeight } from "./quality";
 import { useButecoWebState } from "./useButecoWeb";
@@ -106,6 +107,7 @@ export function ButecoPanel({
     return (
         <div>
             <ButecoRoomHeader room={web.room} />
+            <ButecoCameraToggle />
             {error ? <Paragraph>{BUTECO_ERROR_MESSAGES[error.code]}</Paragraph> : null}
             <HeadingTertiary>Fonte</HeadingTertiary>
             <div>
@@ -253,6 +255,23 @@ function ButecoRooms({
                     Criar sala
                 </Button>
             )}
+        </div>
+    );
+}
+
+function ButecoCameraToggle() {
+    const camera = useButecoCameraState();
+
+    return (
+        <div>
+            <Button
+                variant="secondary"
+                disabled={camera.busy}
+                onClick={() => void (camera.enabled ? disableButecoCamera() : enableButecoCamera())}
+            >
+                {camera.busy ? "Aguarde..." : camera.enabled ? "Desligar câmera" : "Ligar câmera"}
+            </Button>
+            {camera.error ? <Paragraph>{camera.error}</Paragraph> : null}
         </div>
     );
 }

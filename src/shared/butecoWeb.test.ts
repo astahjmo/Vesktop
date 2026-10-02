@@ -46,6 +46,19 @@ describe("mapLobbyRooms", () => {
     });
 });
 
+describe("mapRoomState camera and quality", () => {
+    it("keeps cameraId and the room quality with safe defaults", () => {
+        const room = mapRoomState({
+            roomId: "r1",
+            members: [{ userId: "u1", cameraId: "c1" }, { userId: "u2" }],
+            quality: "alta"
+        });
+        expect(room?.members.map(member => member.cameraId)).toEqual(["c1", null]);
+        expect(room?.quality).toBe("alta");
+        expect(mapRoomState({ roomId: "r2", members: [], quality: "x" })?.quality).toBe("economica");
+    });
+});
+
 describe("mapRoomState", () => {
     it("maps members and defaults", () => {
         const room = mapRoomState({

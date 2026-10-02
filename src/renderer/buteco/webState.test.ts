@@ -24,7 +24,8 @@ describe("findRoomStream", () => {
                 { userId: "u2", displayName: "Bia", screenId: "s1" }
             ],
             screenAudioAllowed: true,
-            screenTransport: "mediamtx"
+            screenTransport: "mediamtx",
+            quality: "economica"
         });
         expect(member?.userId).toBe("u2");
     });
@@ -37,7 +38,8 @@ describe("findRoomStream", () => {
                 name: "Mesa",
                 members: [{ userId: "u1", displayName: "Ana", screenId: null }],
                 screenAudioAllowed: true,
-                screenTransport: "mediamtx"
+                screenTransport: "mediamtx",
+                quality: "economica"
             })
         ).toBeNull();
     });

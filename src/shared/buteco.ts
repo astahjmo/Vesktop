@@ -107,6 +107,8 @@ export type ButecoEvent =
 /** Maps an HTTP refusal from the Ground into a stable client error. */
 export function mapGroundRefusal(status: number, body: any, retryAfter?: string | null): ButecoError {
     const serverCode = typeof body?.error === "string" ? body.error : undefined;
+    // Endpoints do SFU de câmera respondem o motivo (busy/full/blocked/...) em `reason`.
+    const serverReason = typeof body?.reason === "string" ? body.reason : undefined;
     const code: ButecoErrorCode =
         serverCode && (KNOWN_ERROR_CODES as readonly string[]).includes(serverCode)
             ? (serverCode as ButecoErrorCode)
@@ -118,7 +120,7 @@ export function mapGroundRefusal(status: number, body: any, retryAfter?: string 
                   ? "screen_taken"
                   : "network";
 
-    const error: ButecoError = { code, message: serverCode ?? `HTTP ${status}` };
+    const error: ButecoError = { code, message: serverCode ?? serverReason ?? `HTTP ${status}` };
     if (code === "busy" && retryAfter) {
         const secs = Number(retryAfter);
         if (Number.isFinite(secs)) error.retryAfterSec = secs;
